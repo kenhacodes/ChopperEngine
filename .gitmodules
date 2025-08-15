@@ -1,0 +1,3 @@
+[submodule "ChopperEngine/Vendor/GLFW"]
+	path = ChopperEngine/Vendor/GLFW
+	url = https://github.com/glfw/glfw.git

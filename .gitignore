@@ -30,3 +30,19 @@
 *.exe
 *.out
 *.app
+
+# Directories
+.vs/
+.idea/
+Binaries/
+
+# Files
+*.vcxproj
+*.vcxproj.user
+*.vcxproj.filters
+*.sln
+*.log
+Makefile
+
+# Exclude
+!Vendor/Binaries
