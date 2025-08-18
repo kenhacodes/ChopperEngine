@@ -14,9 +14,12 @@ namespace Chopper
     {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        //glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Chopper Engine", nullptr, nullptr);
+        glfwSetWindowUserPointer(window, this);
+        glfwSetFramebufferSizeCallback(window, framebufferResizeCallback);
     }
+
 
     void HelloTriangleApplication::mainLoop()
     {
@@ -41,16 +44,41 @@ namespace Chopper
         createImageViews();
         createGraphicsPipeline();
         createCommandPool();
+        createVertexBuffer();
+        createIndexBuffer();
         createCommandBuffers();
         createSyncObjects();
     }
 
+    void HelloTriangleApplication::cleanupSwapChain()
+    {
+        swapChainImageViews.clear();
+        swapChain = nullptr;
+    }
+
     void HelloTriangleApplication::cleanup()
     {
+        cleanupSwapChain();
         glfwDestroyWindow(window);
         glfwTerminate();
     }
 
+    void HelloTriangleApplication::recreateSwapChain()
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        while (width == 0 || height == 0)
+        {
+            glfwGetFramebufferSize(window, &width, &height);
+            glfwWaitEvents();
+        }
+
+        device.waitIdle();
+
+        cleanupSwapChain();
+        createSwapChain();
+        createImageViews();
+    }
 
     void HelloTriangleApplication::createInstance()
     {
@@ -193,6 +221,7 @@ namespace Chopper
 
         vk::PhysicalDeviceVulkan13Features vulkan13Features{};
         vulkan13Features.dynamicRendering = VK_TRUE;
+        vulkan13Features.synchronization2 = VK_TRUE;
 
         vk::PhysicalDeviceExtendedDynamicStateFeaturesEXT dynamicStateFeatures{};
         dynamicStateFeatures.extendedDynamicState = VK_TRUE;
@@ -218,7 +247,6 @@ namespace Chopper
         deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
         deviceCreateInfo.enabledExtensionCount = static_cast<uint32_t>(requiredDeviceExtension.size());
         deviceCreateInfo.ppEnabledExtensionNames = requiredDeviceExtension.data();
-
 
         device = vk::raii::Device(physicalDevice, deviceCreateInfo);
 
@@ -264,6 +292,7 @@ namespace Chopper
         minImageCount = (surfaceCapabilities.maxImageCount > 0 && minImageCount > surfaceCapabilities.maxImageCount)
                             ? surfaceCapabilities.maxImageCount
                             : minImageCount;
+
         vk::SwapchainCreateInfoKHR swapChainCreateInfo{};
         swapChainCreateInfo.surface = surface;
         swapChainCreateInfo.minImageCount = minImageCount;
@@ -314,7 +343,13 @@ namespace Chopper
 
         vk::PipelineShaderStageCreateInfo shaderStages[] = {vertShaderStageInfo, fragShaderStageInfo};
 
-        vk::PipelineVertexInputStateCreateInfo vertexInputInfo;
+        auto bindingDescription = Vertex::getBindingDescription();
+        auto attributeDescriptions = Vertex::getAttributeDescriptions();
+        vk::PipelineVertexInputStateCreateInfo vertexInputInfo{};
+        vertexInputInfo.vertexBindingDescriptionCount = 1;
+        vertexInputInfo.pVertexBindingDescriptions = &bindingDescription;
+        vertexInputInfo.vertexAttributeDescriptionCount = static_cast<uint32_t>(attributeDescriptions.size());
+        vertexInputInfo.pVertexAttributeDescriptions = attributeDescriptions.data();
 
         vk::PipelineInputAssemblyStateCreateInfo inputAssembly{};
         inputAssembly.topology = vk::PrimitiveTopology::eTriangleList;
@@ -364,7 +399,6 @@ namespace Chopper
         pipelineRenderingCreateInfo.colorAttachmentCount = 1;
         pipelineRenderingCreateInfo.pColorAttachmentFormats = &swapChainImageFormat;
 
-
         vk::GraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.pNext = &pipelineRenderingCreateInfo;
         pipelineInfo.stageCount = 2;
@@ -378,7 +412,6 @@ namespace Chopper
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = pipelineLayout;
         pipelineInfo.renderPass = nullptr;
-
 
         graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
     }
@@ -394,6 +427,8 @@ namespace Chopper
 
     void HelloTriangleApplication::createCommandBuffers()
     {
+        commandBuffers.clear();
+
         vk::CommandBufferAllocateInfo allocInfo{};
         allocInfo.commandPool = commandPool;
         allocInfo.level = vk::CommandBufferLevel::ePrimary;
@@ -433,11 +468,11 @@ namespace Chopper
 
         commandBuffers[currentFrame].beginRendering(renderingInfo);
         commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
-                                                                 static_cast<float>(swapChainExtent.height), 0.0f,
-                                                                 1.0f));
-        commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-        commandBuffers[currentFrame].draw(3, 1, 0, 0);
+        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+        commandBuffers[currentFrame].setScissor( 0, vk::Rect2D( vk::Offset2D( 0, 0 ), swapChainExtent ) );
+        commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, {0});
+        commandBuffers[currentFrame].bindIndexBuffer( *indexBuffer, 0, vk::IndexTypeValue<decltype(indices)::value_type>::value );
+        commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
         commandBuffers[currentFrame].endRendering();
         // After rendering, transition the swapchain image to PRESENT_SRC
         transition_image_layout(
@@ -460,7 +495,7 @@ namespace Chopper
         vk::AccessFlags2 dst_access_mask,
         vk::PipelineStageFlags2 src_stage_mask,
         vk::PipelineStageFlags2 dst_stage_mask
-        )
+    )
     {
         vk::ImageMemoryBarrier2 barrier = {};
         barrier.srcStageMask = src_stage_mask;
@@ -487,6 +522,97 @@ namespace Chopper
         commandBuffers[currentFrame].pipelineBarrier2(dependency_info);
     }
 
+    void HelloTriangleApplication::createVertexBuffer()
+    {
+        vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+        vk::raii::Buffer stagingBuffer({});
+        vk::raii::DeviceMemory stagingBufferMemory({});
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                     stagingBuffer, stagingBufferMemory);
+
+        void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(dataStaging, vertices.data(), bufferSize);
+        stagingBufferMemory.unmapMemory();
+
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, vertexBuffer, vertexBufferMemory);
+
+        copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+    }
+
+    void HelloTriangleApplication::copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer,
+                                              vk::DeviceSize size)
+    {
+        vk::CommandBufferAllocateInfo allocInfo{};
+        allocInfo.commandPool = commandPool;
+        allocInfo.level = vk::CommandBufferLevel::ePrimary;
+        allocInfo.commandBufferCount = 1;
+
+        vk::raii::CommandBuffer commandCopyBuffer = std::move(device.allocateCommandBuffers(allocInfo).front());
+        commandCopyBuffer.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+        commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
+        commandCopyBuffer.end();
+        vk::SubmitInfo submit_info = {};
+        submit_info.commandBufferCount = 1;
+        submit_info.pCommandBuffers = &*commandCopyBuffer;
+        queue.submit(submit_info, nullptr);
+        queue.waitIdle();
+    }
+
+    void HelloTriangleApplication::createIndexBuffer()
+    {
+        vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
+
+        vk::raii::Buffer stagingBuffer({});
+        vk::raii::DeviceMemory stagingBufferMemory({});
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                     stagingBuffer, stagingBufferMemory);
+
+        void* data = stagingBufferMemory.mapMemory(0, bufferSize);
+        memcpy(data, indices.data(), (size_t)bufferSize);
+        stagingBufferMemory.unmapMemory();
+
+        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer,
+                     vk::MemoryPropertyFlagBits::eDeviceLocal, indexBuffer, indexBufferMemory);
+
+        copyBuffer(stagingBuffer, indexBuffer, bufferSize);
+    }
+
+    void HelloTriangleApplication::createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage,
+                                                vk::MemoryPropertyFlags properties, vk::raii::Buffer& buffer,
+                                                vk::raii::DeviceMemory& bufferMemory)
+    {
+        vk::BufferCreateInfo bufferInfo{};
+        bufferInfo.size = size;
+        bufferInfo.usage = usage;
+        bufferInfo.sharingMode = vk::SharingMode::eExclusive;
+        buffer = vk::raii::Buffer(device, bufferInfo);
+        vk::MemoryRequirements memRequirements = buffer.getMemoryRequirements();
+        vk::MemoryAllocateInfo allocInfo{};
+        allocInfo.allocationSize = memRequirements.size;
+        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
+
+        bufferMemory = vk::raii::DeviceMemory(device, allocInfo);
+        buffer.bindMemory(bufferMemory, 0);
+    }
+
+    uint32_t HelloTriangleApplication::findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties)
+    {
+        vk::PhysicalDeviceMemoryProperties memProperties = physicalDevice.getMemoryProperties();
+
+        for (uint32_t i = 0; i < memProperties.memoryTypeCount; i++)
+        {
+            if ((typeFilter & (1 << i)) && (memProperties.memoryTypes[i].propertyFlags & properties) == properties)
+            {
+                return i;
+            }
+        }
+
+        throw std::runtime_error("failed to find suitable memory type!");
+    }
+
     void HelloTriangleApplication::createSyncObjects()
     {
         presentCompleteSemaphore.clear();
@@ -498,7 +624,7 @@ namespace Chopper
             presentCompleteSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
             renderFinishedSemaphore.emplace_back(device, vk::SemaphoreCreateInfo());
         }
-        
+
         for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
         {
             inFlightFences.emplace_back(device, vk::FenceCreateInfo(vk::FenceCreateFlagBits::eSignaled));
@@ -508,15 +634,30 @@ namespace Chopper
     void HelloTriangleApplication::drawFrame()
     {
         while (vk::Result::eTimeout == device.waitForFences(*inFlightFences[currentFrame], vk::True, UINT64_MAX));
+        if (framebufferResized)
+        {
+            framebufferResized = false;
+            recreateSwapChain();
+            return;
+        }
         auto [result, imageIndex] = swapChain.acquireNextImage(
             UINT64_MAX, *presentCompleteSemaphore[semaphoreIndex], nullptr);
+        if (result == vk::Result::eErrorOutOfDateKHR)
+        {
+            recreateSwapChain();
+            return;
+        }
+        if (result != vk::Result::eSuccess && result != vk::Result::eSuboptimalKHR)
+        {
+            throw std::runtime_error("failed to acquire swap chain image!");
+        }
 
         device.resetFences(*inFlightFences[currentFrame]);
         commandBuffers[currentFrame].reset();
         recordCommandBuffer(imageIndex);
 
         vk::PipelineStageFlags waitDestinationStageMask(vk::PipelineStageFlagBits::eColorAttachmentOutput);
-        
+
         vk::SubmitInfo submitInfo{};
         submitInfo.waitSemaphoreCount = 1;
         submitInfo.pWaitSemaphores = &*presentCompleteSemaphore[semaphoreIndex];
@@ -525,9 +666,9 @@ namespace Chopper
         submitInfo.pCommandBuffers = &*commandBuffers[currentFrame];
         submitInfo.signalSemaphoreCount = 1;
         submitInfo.pSignalSemaphores = &*renderFinishedSemaphore[imageIndex];
-        
+
         queue.submit(submitInfo, *inFlightFences[currentFrame]);
-        
+
         vk::PresentInfoKHR presentInfoKHR{};
         presentInfoKHR.waitSemaphoreCount = 1;
         presentInfoKHR.pWaitSemaphores = &*renderFinishedSemaphore[imageIndex];
@@ -536,17 +677,20 @@ namespace Chopper
         presentInfoKHR.pImageIndices = &imageIndex;
 
         result = queue.presentKHR(presentInfoKHR);
-        switch (result)
+
+        if (result == vk::Result::eErrorOutOfDateKHR || result == vk::Result::eSuboptimalKHR || framebufferResized)
         {
-        case vk::Result::eSuccess: break;
-        case vk::Result::eSuboptimalKHR: std::cout << "vk::Queue::presentKHR returned vk::Result::eSuboptimalKHR !\n";
-            break;
-        default: break; // an unexpected result is returned!
+            framebufferResized = false;
+            recreateSwapChain();
         }
+        else if (result != vk::Result::eSuccess)
+        {
+            throw std::runtime_error("failed to present swap chain image!");
+        }
+
         semaphoreIndex = (semaphoreIndex + 1) % presentCompleteSemaphore.size();
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
-
 
     std::vector<const char*> HelloTriangleApplication::getRequiredExtensions()
     {
