@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <limits>
 #include <array>
+#include <chrono>
 
 //#include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
@@ -17,7 +18,10 @@
 
 #define GLFW_INCLUDE_VULKAN 
 #include <GLFW/glfw3.h>
+
+#define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
 
 namespace Chopper
 {
@@ -54,6 +58,13 @@ namespace Chopper
         }
     };
 
+    struct UniformBufferObject
+    {
+        glm::mat4 model;
+        glm::mat4 view;
+        glm::mat4 proj;
+    };
+
     const std::vector<Vertex> vertices = {
         {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
         {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
@@ -88,6 +99,7 @@ namespace Chopper
         vk::Extent2D swapChainExtent;
         std::vector<vk::raii::ImageView> swapChainImageViews;
 
+        vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
         vk::raii::PipelineLayout pipelineLayout = nullptr;
         vk::raii::Pipeline graphicsPipeline = nullptr;
 
@@ -95,6 +107,13 @@ namespace Chopper
         vk::raii::DeviceMemory vertexBufferMemory = nullptr;
         vk::raii::Buffer indexBuffer = nullptr;
         vk::raii::DeviceMemory indexBufferMemory = nullptr;
+
+        std::vector<vk::raii::Buffer> uniformBuffers;
+        std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+        std::vector<void*> uniformBuffersMapped;
+
+        vk::raii::DescriptorPool descriptorPool = nullptr;
+        std::vector<vk::raii::DescriptorSet> descriptorSets;
 
         vk::raii::CommandPool commandPool = nullptr;
         std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -130,7 +149,8 @@ namespace Chopper
         void createCommandPool();
         void createCommandBuffers();
         void recordCommandBuffer(uint32_t imageIndex);
-        void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Buffer& buffer, vk::raii::DeviceMemory& bufferMemory);
+        void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
+                          vk::raii::Buffer& buffer, vk::raii::DeviceMemory& bufferMemory);
         void copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer,
                         vk::DeviceSize size);
         void createIndexBuffer();
@@ -147,8 +167,12 @@ namespace Chopper
         );
         void createSyncObjects();
         void drawFrame();
-
+        void createDescriptorSetLayout();
+        void createUniformBuffers();
         void setupDebugMessenger();
+        void createDescriptorPool();
+        void createDescriptorSets();
+        void updateUniformBuffer(uint32_t currentImage);
 
         std::vector<const char*> getRequiredExtensions();
 
