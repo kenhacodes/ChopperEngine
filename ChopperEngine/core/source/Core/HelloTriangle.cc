@@ -63,6 +63,7 @@ namespace Chopper
         createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
+        createDepthResources();
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
@@ -104,6 +105,7 @@ namespace Chopper
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
+        createDepthResources();
     }
 
     void HelloTriangleApplication::createInstance()
@@ -418,6 +420,14 @@ namespace Chopper
         multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
         multisampling.sampleShadingEnable = vk::False;
 
+        vk::PipelineDepthStencilStateCreateInfo depthStencil{};
+        depthStencil.depthTestEnable = vk::True;
+        depthStencil.depthWriteEnable = vk::True;
+        depthStencil.depthCompareOp = vk::CompareOp::eLess;
+        depthStencil.depthBoundsTestEnable = vk::False;
+        depthStencil.stencilTestEnable = vk::False;
+
+
         vk::PipelineColorBlendAttachmentState colorBlendAttachment{};
         colorBlendAttachment.blendEnable = vk::False;
         colorBlendAttachment.colorWriteMask = vk::ColorComponentFlagBits::eR | vk::ColorComponentFlagBits::eG |
@@ -444,9 +454,12 @@ namespace Chopper
 
         pipelineLayout = vk::raii::PipelineLayout(device, pipelineLayoutInfo);
 
+        vk::Format depthFormat = findDepthFormat();
         vk::PipelineRenderingCreateInfo pipelineRenderingCreateInfo{};
         pipelineRenderingCreateInfo.colorAttachmentCount = 1;
         pipelineRenderingCreateInfo.pColorAttachmentFormats = &swapChainImageFormat;
+        pipelineRenderingCreateInfo.depthAttachmentFormat = depthFormat;
+
 
         vk::GraphicsPipelineCreateInfo pipelineInfo{};
         pipelineInfo.pNext = &pipelineRenderingCreateInfo;
@@ -457,6 +470,7 @@ namespace Chopper
         pipelineInfo.pViewportState = &viewportState;
         pipelineInfo.pRasterizationState = &rasterizer;
         pipelineInfo.pMultisampleState = &multisampling;
+        pipelineInfo.pDepthStencilState = &depthStencil;
         pipelineInfo.pColorBlendState = &colorBlending;
         pipelineInfo.pDynamicState = &dynamicState;
         pipelineInfo.layout = pipelineLayout;
@@ -472,6 +486,48 @@ namespace Chopper
         poolInfo.queueFamilyIndex = queueIndex;
 
         commandPool = vk::raii::CommandPool(device, poolInfo);
+    }
+
+    void HelloTriangleApplication::createDepthResources()
+    {
+        vk::Format depthFormat = findDepthFormat();
+
+        createImage(swapChainExtent.width, swapChainExtent.height, depthFormat, vk::ImageTiling::eOptimal,
+                    vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal,
+                    depthImage, depthImageMemory);
+        depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth);
+
+        //transitionImageLayout(depthImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
+    }
+
+    vk::Format HelloTriangleApplication::findSupportedFormat(const std::vector<vk::Format>& candidates,
+                                                             vk::ImageTiling tiling, vk::FormatFeatureFlags features)
+    {
+        auto formatIt = std::ranges::find_if(candidates, [&](auto const format)
+        {
+            vk::FormatProperties props = physicalDevice.getFormatProperties(format);
+            return (((tiling == vk::ImageTiling::eLinear) && ((props.linearTilingFeatures & features) == features)) ||
+                ((tiling == vk::ImageTiling::eOptimal) && ((props.optimalTilingFeatures & features) == features)));
+        });
+        if (formatIt == candidates.end())
+        {
+            throw std::runtime_error("failed to find supported format!");
+        }
+        return *formatIt;
+    }
+
+    vk::Format HelloTriangleApplication::findDepthFormat()
+    {
+        return findSupportedFormat(
+            {vk::Format::eD32Sfloat, vk::Format::eD32SfloatS8Uint, vk::Format::eD24UnormS8Uint},
+            vk::ImageTiling::eOptimal,
+            vk::FormatFeatureFlagBits::eDepthStencilAttachment
+        );
+    }
+
+    bool HelloTriangleApplication::hasStencilComponent(vk::Format format)
+    {
+        return format == vk::Format::eD32SfloatS8Uint || format == vk::Format::eD24UnormS8Uint;
     }
 
     void HelloTriangleApplication::createTextureImage()
@@ -510,7 +566,7 @@ namespace Chopper
 
     void HelloTriangleApplication::createTextureImageView()
     {
-        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb);
+        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor);
     }
 
     void HelloTriangleApplication::createTextureSampler()
@@ -531,13 +587,14 @@ namespace Chopper
         textureSampler = vk::raii::Sampler(device, samplerInfo);
     }
 
-    vk::raii::ImageView HelloTriangleApplication::createImageView(vk::raii::Image& image, vk::Format format)
+    vk::raii::ImageView HelloTriangleApplication::createImageView(vk::raii::Image& image, vk::Format format,
+                                                                  vk::ImageAspectFlags aspectFlags)
     {
         vk::ImageViewCreateInfo viewInfo{};
         viewInfo.image = image;
         viewInfo.viewType = vk::ImageViewType::e2D;
         viewInfo.format = format;
-        viewInfo.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+        viewInfo.subresourceRange = {aspectFlags, 0, 1, 0, 1};
         return vk::raii::ImageView(device, viewInfo);
     }
 
@@ -678,13 +735,50 @@ namespace Chopper
             vk::PipelineStageFlagBits2::eColorAttachmentOutput // dstStage
         );
 
-        vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
-        vk::RenderingAttachmentInfo attachmentInfo = {};
-        attachmentInfo.imageView = swapChainImageViews[imageIndex];
-        attachmentInfo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        attachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
-        attachmentInfo.storeOp = vk::AttachmentStoreOp::eStore;
-        attachmentInfo.clearValue = clearColor;
+        // Transition depth image to depth attachment optimal layout
+        vk::ImageMemoryBarrier2 depthBarrier = {
+            vk::PipelineStageFlagBits2::eTopOfPipe,
+            {},
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            depthImage,
+            vk::ImageSubresourceRange{
+                vk::ImageAspectFlagBits::eDepth,
+                0,
+                1,
+                0,
+                1
+            }
+        };
+        vk::DependencyInfo depthDependencyInfo = {};
+        depthDependencyInfo.dependencyFlags = {};
+        depthDependencyInfo.imageMemoryBarrierCount = 1;
+        depthDependencyInfo.pImageMemoryBarriers = &depthBarrier;
+
+        commandBuffers[currentFrame].pipelineBarrier2(depthDependencyInfo);
+
+        vk::ClearValue clearColor = vk::ClearColorValue(0.01f, 0.01f, 0.01f, 1.0f);
+        vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
+
+        vk::RenderingAttachmentInfo colorAttachmentInfo = {};
+        colorAttachmentInfo.imageView = swapChainImageViews[imageIndex];
+        colorAttachmentInfo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        colorAttachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
+        colorAttachmentInfo.storeOp = vk::AttachmentStoreOp::eStore;
+        colorAttachmentInfo.clearValue = clearColor;
+
+        vk::RenderingAttachmentInfo depthAttachmentInfo = {};
+        depthAttachmentInfo.imageView = depthImageView;
+        depthAttachmentInfo.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
+        depthAttachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
+        depthAttachmentInfo.storeOp = vk::AttachmentStoreOp::eDontCare;
+        depthAttachmentInfo.clearValue = clearDepth;
 
         vk::RenderingInfo renderingInfo = {};
         renderingInfo.renderArea.offset.setX(0);
@@ -692,7 +786,8 @@ namespace Chopper
         renderingInfo.renderArea.extent = swapChainExtent;
         renderingInfo.layerCount = 1;
         renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachments = &attachmentInfo;
+        renderingInfo.pColorAttachments = &colorAttachmentInfo;
+        renderingInfo.pDepthAttachment = &depthAttachmentInfo;
 
         commandBuffers[currentFrame].beginRendering(renderingInfo);
         commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
