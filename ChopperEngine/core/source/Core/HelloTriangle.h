@@ -12,6 +12,7 @@
 #include <array>
 #include <chrono>
 
+
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
@@ -21,15 +22,21 @@
 
 #define GLM_FORCE_RADIANS
 #define GLM_FORCE_DEPTH_ZERO_TO_ONE
+#define GLM_ENABLE_EXPERIMENTAL
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtx/hash.hpp>
 
 #include <stb/stb_image.h>
+#include <tinyobjloader/tiny_obj_loader.h>
 
 namespace Chopper
 {
     constexpr uint32_t WIDTH = 1920;
     constexpr uint32_t HEIGHT = 1080;
+    constexpr uint64_t FenceTimeout = 100000000;
+    const std::string MODEL_PATH = "testmodels/hercules_kalliope/hercules_kalliope.obj";
+    const std::string TEXTURE_PATH = "testmodels/hercules_kalliope/T_Herkules_Kalliope.png";
     constexpr int MAX_FRAMES_IN_FLIGHT = 2;
 
     const std::vector validationLayers = {
@@ -42,49 +49,35 @@ namespace Chopper
     constexpr bool enableValidationLayers = true;
 #endif
 
-    struct Vertex
-    {
-        glm::vec3 pos;
-        glm::vec3 color;
-        glm::vec2 texCoord;
+    struct Vertex {
+    glm::vec3 pos;
+    glm::vec3 color;
+    glm::vec2 texCoord;
 
-        static vk::VertexInputBindingDescription getBindingDescription()
-        {
-            return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
-        }
+    static vk::VertexInputBindingDescription getBindingDescription() {
+        return { 0, sizeof(Vertex), vk::VertexInputRate::eVertex };
+    }
 
-        static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
-        {
-            return {
-                vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
-                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
-                vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord))
-            };
-        }
-    };
+    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() {
+        return {
+            vk::VertexInputAttributeDescription( 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos) ),
+            vk::VertexInputAttributeDescription( 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color) ),
+            vk::VertexInputAttributeDescription( 2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord) )
+        };
+    }
+
+    bool operator==(const Vertex& other) const {
+        return pos == other.pos && color == other.color && texCoord == other.texCoord;
+    }
+};
+
+
 
     struct UniformBufferObject
     {
         glm::mat4 model;
         glm::mat4 view;
         glm::mat4 proj;
-    };
-
-    const std::vector<Vertex> vertices = {
-        {{-0.5f, -0.5f, 0.0f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{0.5f, -0.5f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{0.5f, 0.5f, 0.0f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-        {{-0.5f, 0.5f, 0.0f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}},
-
-        {{-0.5f, -0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
-        {{0.5f, -0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
-        {{0.5f, 0.5f, -0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
-        {{-0.5f, 0.5f, -0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
-    };
-
-    const std::vector<uint16_t> indices = {
-        0, 1, 2, 2, 3, 0,
-        4, 5, 6, 6, 7, 4
     };
 
 
@@ -97,56 +90,58 @@ namespace Chopper
         GLFWwindow* window = nullptr;
         GLFWmonitor** monitors = nullptr;
         int monitors_count = 0;
-        vk::raii::Context context;
-        vk::raii::Instance instance = nullptr;
-        vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
-        vk::raii::SurfaceKHR surface = nullptr;
-        vk::raii::PhysicalDevice physicalDevice = nullptr;
-        vk::raii::Device device = nullptr;
-        uint32_t queueIndex = ~0;
-        vk::raii::Queue queue = nullptr;
+        vk::raii::Context                context;
+    vk::raii::Instance               instance       = nullptr;
+    vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+    vk::raii::SurfaceKHR             surface        = nullptr;
+    vk::raii::PhysicalDevice         physicalDevice = nullptr;
+    vk::raii::Device                 device         = nullptr;
+    uint32_t                         queueIndex     = ~0;
+    vk::raii::Queue                  queue          = nullptr;
 
-        vk::raii::SwapchainKHR swapChain = nullptr;
-        std::vector<vk::Image> swapChainImages;
-        vk::Format swapChainImageFormat = vk::Format::eUndefined;
-        vk::Extent2D swapChainExtent;
-        std::vector<vk::raii::ImageView> swapChainImageViews;
+    vk::raii::SwapchainKHR swapChain = nullptr;
+    std::vector<vk::Image> swapChainImages;
+    vk::Format swapChainImageFormat = vk::Format::eUndefined;
+    vk::Extent2D swapChainExtent;
+    std::vector<vk::raii::ImageView> swapChainImageViews;
 
-        vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
-        vk::raii::PipelineLayout pipelineLayout = nullptr;
-        vk::raii::Pipeline graphicsPipeline = nullptr;
+    vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
+    vk::raii::PipelineLayout pipelineLayout = nullptr;
+    vk::raii::Pipeline graphicsPipeline = nullptr;
 
-        vk::raii::Image depthImage = nullptr;
-        vk::raii::DeviceMemory depthImageMemory = nullptr;
-        vk::raii::ImageView depthImageView = nullptr;
+    vk::raii::Image depthImage = nullptr;
+    vk::raii::DeviceMemory depthImageMemory = nullptr;
+    vk::raii::ImageView depthImageView = nullptr;
 
-        vk::raii::Image textureImage = nullptr;
-        vk::raii::DeviceMemory textureImageMemory = nullptr;
-        vk::raii::ImageView textureImageView = nullptr;
-        vk::raii::Sampler textureSampler = nullptr;
+    vk::raii::Image textureImage = nullptr;
+    vk::raii::DeviceMemory textureImageMemory = nullptr;
+    vk::raii::ImageView textureImageView = nullptr;
+    vk::raii::Sampler textureSampler = nullptr;
 
-        vk::raii::Buffer vertexBuffer = nullptr;
-        vk::raii::DeviceMemory vertexBufferMemory = nullptr;
-        vk::raii::Buffer indexBuffer = nullptr;
-        vk::raii::DeviceMemory indexBufferMemory = nullptr;
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    vk::raii::Buffer vertexBuffer = nullptr;
+    vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+    vk::raii::Buffer indexBuffer = nullptr;
+    vk::raii::DeviceMemory indexBufferMemory = nullptr;
 
-        std::vector<vk::raii::Buffer> uniformBuffers;
-        std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
-        std::vector<void*> uniformBuffersMapped;
+    std::vector<vk::raii::Buffer> uniformBuffers;
+    std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+    std::vector<void*> uniformBuffersMapped;
 
-        vk::raii::DescriptorPool descriptorPool = nullptr;
-        std::vector<vk::raii::DescriptorSet> descriptorSets;
+    vk::raii::DescriptorPool descriptorPool = nullptr;
+    std::vector<vk::raii::DescriptorSet> descriptorSets;
 
-        vk::raii::CommandPool commandPool = nullptr;
-        std::vector<vk::raii::CommandBuffer> commandBuffers;
+    vk::raii::CommandPool commandPool = nullptr;
+    std::vector<vk::raii::CommandBuffer> commandBuffers;
 
-        std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
-        std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
-        std::vector<vk::raii::Fence> inFlightFences;
-        uint32_t semaphoreIndex = 0;
-        uint32_t currentFrame = 0;
+    std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
+    std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
+    std::vector<vk::raii::Fence> inFlightFences;
+    uint32_t semaphoreIndex = 0;
+    uint32_t currentFrame = 0;
 
-        bool framebufferResized = false;
+    bool framebufferResized = false;
 
         std::vector<const char*> requiredDeviceExtension = {
             vk::KHRSwapchainExtensionName,
@@ -206,14 +201,16 @@ namespace Chopper
         void createTextureImageView();
         void createTextureSampler();
         void createDepthResources();
-        
+        void loadModel();
+
         vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
                                        vk::FormatFeatureFlags features);
         vk::Format findDepthFormat();
         bool hasStencilComponent(vk::Format format);
-        
+
         std::vector<const char*> getRequiredExtensions();
-        vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags);
+        vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format,
+                                            vk::ImageAspectFlags aspectFlags);
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,
