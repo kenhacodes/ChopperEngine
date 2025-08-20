@@ -9,9 +9,11 @@ project "app"
 
    includedirs
    {
-      "source",
+    "source",
     "../vendor/GLFW/include",
     "../vendor/GLM",
+    "../vendor/include",
+    "../vendor",
     os.getenv("VULKAN_SDK") .. "/include",
 	  -- Include Core
 	  "../core/source"

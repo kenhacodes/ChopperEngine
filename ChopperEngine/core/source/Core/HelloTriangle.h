@@ -12,7 +12,7 @@
 #include <array>
 #include <chrono>
 
-//#include <vulkan/vulkan.hpp>
+#include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
 
@@ -22,6 +22,8 @@
 #define GLM_FORCE_RADIANS
 #include <glm/glm.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+
+#include <stb/stb_image.h>
 
 namespace Chopper
 {
@@ -43,17 +45,19 @@ namespace Chopper
     {
         glm::vec2 pos;
         glm::vec3 color;
+        glm::vec2 texCoord;
 
         static vk::VertexInputBindingDescription getBindingDescription()
         {
             return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
         }
 
-        static std::array<vk::VertexInputAttributeDescription, 2> getAttributeDescriptions()
+        static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
         {
             return {
                 vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, pos)),
-                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color))
+                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
+                vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord))
             };
         }
     };
@@ -66,10 +70,10 @@ namespace Chopper
     };
 
     const std::vector<Vertex> vertices = {
-        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}},
-        {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}},
-        {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}},
-        {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}}
+        {{-0.5f, -0.5f}, {1.0f, 0.0f, 0.0f}, {1.0f, 0.0f}},
+        {{0.5f, -0.5f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f}},
+        {{0.5f, 0.5f}, {0.0f, 0.0f, 1.0f}, {0.0f, 1.0f}},
+        {{-0.5f, 0.5f}, {1.0f, 1.0f, 1.0f}, {1.0f, 1.0f}}
     };
 
     const std::vector<uint16_t> indices = {
@@ -84,6 +88,8 @@ namespace Chopper
 
     private:
         GLFWwindow* window = nullptr;
+        GLFWmonitor** monitors = nullptr;
+        int monitors_count = 0;
         vk::raii::Context context;
         vk::raii::Instance instance = nullptr;
         vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
@@ -102,6 +108,11 @@ namespace Chopper
         vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
         vk::raii::PipelineLayout pipelineLayout = nullptr;
         vk::raii::Pipeline graphicsPipeline = nullptr;
+
+        vk::raii::Image textureImage = nullptr;
+        vk::raii::DeviceMemory textureImageMemory = nullptr;
+        vk::raii::ImageView textureImageView = nullptr;
+        vk::raii::Sampler textureSampler = nullptr;
 
         vk::raii::Buffer vertexBuffer = nullptr;
         vk::raii::DeviceMemory vertexBufferMemory = nullptr;
@@ -147,6 +158,14 @@ namespace Chopper
         void createImageViews();
         void createGraphicsPipeline();
         void createCommandPool();
+        void createTextureImage();
+        void createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling,
+                         vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Image& image,
+                         vk::raii::DeviceMemory& imageMemory);
+        void transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout);
+        void copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii::Image& image, uint32_t width, uint32_t height);
+        std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands();
+        void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer);
         void createCommandBuffers();
         void recordCommandBuffer(uint32_t imageIndex);
         void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
@@ -173,8 +192,11 @@ namespace Chopper
         void createDescriptorPool();
         void createDescriptorSets();
         void updateUniformBuffer(uint32_t currentImage);
+        void createTextureImageView();
+        void createTextureSampler();
 
         std::vector<const char*> getRequiredExtensions();
+        vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format);
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,
