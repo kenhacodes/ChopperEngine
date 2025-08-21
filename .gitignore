@@ -44,5 +44,8 @@ Binaries/
 *.log
 Makefile
 
+*.user
+*.ini
+
 # Exclude
 !Vendor/Binaries

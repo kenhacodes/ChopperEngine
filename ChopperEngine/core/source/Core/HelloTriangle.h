@@ -30,6 +30,12 @@
 #include <stb/stb_image.h>
 #include <tinyobjloader/tiny_obj_loader.h>
 
+//#define IMGUI_IMPL_VULKAN_NO_PROTOTYPES
+#include <imgui/imgui.h>
+#include <imgui/imgui_impl_glfw.h>
+#include <imgui/imgui_impl_vulkan.h>
+
+
 namespace Chopper
 {
     constexpr uint32_t WIDTH = 1920;
@@ -49,28 +55,31 @@ namespace Chopper
     constexpr bool enableValidationLayers = true;
 #endif
 
-    struct Vertex {
-    glm::vec3 pos;
-    glm::vec3 color;
-    glm::vec2 texCoord;
+    struct Vertex
+    {
+        glm::vec3 pos;
+        glm::vec3 color;
+        glm::vec2 texCoord;
 
-    static vk::VertexInputBindingDescription getBindingDescription() {
-        return { 0, sizeof(Vertex), vk::VertexInputRate::eVertex };
-    }
+        static vk::VertexInputBindingDescription getBindingDescription()
+        {
+            return {0, sizeof(Vertex), vk::VertexInputRate::eVertex};
+        }
 
-    static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions() {
-        return {
-            vk::VertexInputAttributeDescription( 0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos) ),
-            vk::VertexInputAttributeDescription( 1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color) ),
-            vk::VertexInputAttributeDescription( 2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord) )
-        };
-    }
+        static std::array<vk::VertexInputAttributeDescription, 3> getAttributeDescriptions()
+        {
+            return {
+                vk::VertexInputAttributeDescription(0, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, pos)),
+                vk::VertexInputAttributeDescription(1, 0, vk::Format::eR32G32B32Sfloat, offsetof(Vertex, color)),
+                vk::VertexInputAttributeDescription(2, 0, vk::Format::eR32G32Sfloat, offsetof(Vertex, texCoord))
+            };
+        }
 
-    bool operator==(const Vertex& other) const {
-        return pos == other.pos && color == other.color && texCoord == other.texCoord;
-    }
-};
-
+        bool operator==(const Vertex& other) const
+        {
+            return pos == other.pos && color == other.color && texCoord == other.texCoord;
+        }
+    };
 
 
     struct UniformBufferObject
@@ -90,64 +99,73 @@ namespace Chopper
         GLFWwindow* window = nullptr;
         GLFWmonitor** monitors = nullptr;
         int monitors_count = 0;
-        vk::raii::Context                context;
-    vk::raii::Instance               instance       = nullptr;
-    vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
-    vk::raii::SurfaceKHR             surface        = nullptr;
-    vk::raii::PhysicalDevice         physicalDevice = nullptr;
-    vk::raii::Device                 device         = nullptr;
-    uint32_t                         queueIndex     = ~0;
-    vk::raii::Queue                  queue          = nullptr;
+        vk::raii::Context context;
+        vk::raii::Instance instance = nullptr;
+        vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
+        vk::raii::SurfaceKHR surface = nullptr;
+        vk::raii::PhysicalDevice physicalDevice = nullptr;
+        vk::raii::Device device = nullptr;
+        uint32_t queueIndex = ~0;
+        vk::raii::Queue queue = nullptr;
 
-    vk::raii::SwapchainKHR swapChain = nullptr;
-    std::vector<vk::Image> swapChainImages;
-    vk::Format swapChainImageFormat = vk::Format::eUndefined;
-    vk::Extent2D swapChainExtent;
-    std::vector<vk::raii::ImageView> swapChainImageViews;
+        vk::raii::SwapchainKHR swapChain = nullptr;
+        std::vector<vk::Image> swapChainImages;
+        vk::Format swapChainImageFormat = vk::Format::eUndefined;
+        vk::Extent2D swapChainExtent;
+        std::vector<vk::raii::ImageView> swapChainImageViews;
 
-    vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
-    vk::raii::PipelineLayout pipelineLayout = nullptr;
-    vk::raii::Pipeline graphicsPipeline = nullptr;
+        vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
+        vk::raii::PipelineLayout pipelineLayout = nullptr;
+        vk::raii::Pipeline graphicsPipeline = nullptr;
 
-    vk::raii::Image depthImage = nullptr;
-    vk::raii::DeviceMemory depthImageMemory = nullptr;
-    vk::raii::ImageView depthImageView = nullptr;
+        vk::raii::Image depthImage = nullptr;
+        vk::raii::DeviceMemory depthImageMemory = nullptr;
+        vk::raii::ImageView depthImageView = nullptr;
 
-    vk::raii::Image textureImage = nullptr;
-    vk::raii::DeviceMemory textureImageMemory = nullptr;
-    vk::raii::ImageView textureImageView = nullptr;
-    vk::raii::Sampler textureSampler = nullptr;
+        vk::raii::Image textureImage = nullptr;
+        vk::raii::DeviceMemory textureImageMemory = nullptr;
+        vk::raii::ImageView textureImageView = nullptr;
+        vk::raii::Sampler textureSampler = nullptr;
 
-    std::vector<Vertex> vertices;
-    std::vector<uint32_t> indices;
-    vk::raii::Buffer vertexBuffer = nullptr;
-    vk::raii::DeviceMemory vertexBufferMemory = nullptr;
-    vk::raii::Buffer indexBuffer = nullptr;
-    vk::raii::DeviceMemory indexBufferMemory = nullptr;
+        std::vector<Vertex> vertices;
+        std::vector<uint32_t> indices;
+        vk::raii::Buffer vertexBuffer = nullptr;
+        vk::raii::DeviceMemory vertexBufferMemory = nullptr;
+        vk::raii::Buffer indexBuffer = nullptr;
+        vk::raii::DeviceMemory indexBufferMemory = nullptr;
 
-    std::vector<vk::raii::Buffer> uniformBuffers;
-    std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
-    std::vector<void*> uniformBuffersMapped;
+        std::vector<vk::raii::Buffer> uniformBuffers;
+        std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+        std::vector<void*> uniformBuffersMapped;
 
-    vk::raii::DescriptorPool descriptorPool = nullptr;
-    std::vector<vk::raii::DescriptorSet> descriptorSets;
+        vk::raii::DescriptorPool descriptorPool = nullptr;
+        std::vector<vk::raii::DescriptorSet> descriptorSets;
 
-    vk::raii::CommandPool commandPool = nullptr;
-    std::vector<vk::raii::CommandBuffer> commandBuffers;
+        vk::raii::CommandPool commandPool = nullptr;
+        std::vector<vk::raii::CommandBuffer> commandBuffers;
 
-    std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
-    std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
-    std::vector<vk::raii::Fence> inFlightFences;
-    uint32_t semaphoreIndex = 0;
-    uint32_t currentFrame = 0;
+        std::vector<vk::raii::Semaphore> presentCompleteSemaphore;
+        std::vector<vk::raii::Semaphore> renderFinishedSemaphore;
+        std::vector<vk::raii::Fence> inFlightFences;
+        uint32_t semaphoreIndex = 0;
+        uint32_t currentFrame = 0;
 
-    bool framebufferResized = false;
+        bool framebufferResized = false;
+
+        //ImGui
+        ImGuiIO* io = nullptr;
+        vk::raii::DescriptorPool imgui_descriptor_pool = nullptr;
+        bool show_demo_window = true;
+        bool show_another_window = false;
+        ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
 
         std::vector<const char*> requiredDeviceExtension = {
             vk::KHRSwapchainExtensionName,
             vk::KHRSpirv14ExtensionName,
             vk::KHRSynchronization2ExtensionName,
-            vk::KHRCreateRenderpass2ExtensionName
+            vk::KHRCreateRenderpass2ExtensionName,
+            vk::KHRDynamicRenderingExtensionName
         };
 
         void initWindow();
@@ -202,6 +220,8 @@ namespace Chopper
         void createTextureSampler();
         void createDepthResources();
         void loadModel();
+        void initImGui();
+        void paintImGui();
 
         vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
                                        vk::FormatFeatureFlags features);

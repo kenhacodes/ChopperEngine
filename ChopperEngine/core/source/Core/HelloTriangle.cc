@@ -25,7 +25,7 @@ namespace Chopper
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
         //glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+        //glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
         monitors = glfwGetMonitors(&monitors_count);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Chopper Engine", nullptr, nullptr);
         glfwSetWindowUserPointer(window, this);
@@ -51,6 +51,7 @@ namespace Chopper
 
     void HelloTriangleApplication::mainLoop()
     {
+        initImGui();
         while (!glfwWindowShouldClose(window))
         {
             glfwPollEvents();
@@ -95,6 +96,12 @@ namespace Chopper
 
     void HelloTriangleApplication::cleanup()
     {
+        device.waitIdle();
+
+        ImGui_ImplVulkan_Shutdown();
+        ImGui_ImplGlfw_Shutdown();
+        ImGui::DestroyContext();
+
         cleanupSwapChain();
         glfwDestroyWindow(window);
         glfwTerminate();
@@ -262,8 +269,13 @@ namespace Chopper
         vk::PhysicalDeviceFeatures2 physical_device_features2{};
         physical_device_features2.features.samplerAnisotropy = VK_TRUE;
 
+        vk::PhysicalDeviceDynamicRenderingFeaturesKHR device_dynamic_rendering_features{};
+        device_dynamic_rendering_features.dynamicRendering = VK_TRUE;
+        device_dynamic_rendering_features.sType = vk::PhysicalDeviceDynamicRenderingFeaturesKHR::structureType;
+
 
         vk::PhysicalDeviceVulkan13Features vulkan_13_features{};
+        vulkan_13_features.sType = vk::PhysicalDeviceVulkan13Features::structureType;
         vulkan_13_features.dynamicRendering = VK_TRUE;
         vulkan_13_features.synchronization2 = VK_TRUE;
 
@@ -286,6 +298,7 @@ namespace Chopper
         deviceQueueCreateInfo.pQueuePriorities = &queuePriority;
 
         vk::DeviceCreateInfo deviceCreateInfo{};
+        deviceCreateInfo.sType = vk::DeviceCreateInfo::structureType;
         deviceCreateInfo.pNext = &featureChain.get<vk::PhysicalDeviceFeatures2>();
         deviceCreateInfo.queueCreateInfoCount = 1;
         deviceCreateInfo.pQueueCreateInfos = &deviceQueueCreateInfo;
@@ -487,6 +500,7 @@ namespace Chopper
         pipelineInfo.layout = pipelineLayout;
         pipelineInfo.renderPass = nullptr;
 
+
         graphicsPipeline = vk::raii::Pipeline(device, nullptr, pipelineInfo);
     }
 
@@ -547,13 +561,16 @@ namespace Chopper
         stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
         vk::DeviceSize imageSize = texWidth * texHeight * 4;
 
-        if (!pixels) {
+        if (!pixels)
+        {
             throw std::runtime_error("failed to load texture image!");
         }
 
         vk::raii::Buffer stagingBuffer({});
         vk::raii::DeviceMemory stagingBufferMemory({});
-        createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc, vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, stagingBuffer, stagingBufferMemory);
+        createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
+                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                     stagingBuffer, stagingBufferMemory);
 
         void* data = stagingBufferMemory.mapMemory(0, imageSize);
         memcpy(data, pixels, imageSize);
@@ -561,11 +578,15 @@ namespace Chopper
 
         stbi_image_free(pixels);
 
-        createImage(texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage, textureImageMemory);
+        createImage(texWidth, texHeight, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+                    vk::ImageUsageFlagBits::eTransferDst | vk::ImageUsageFlagBits::eSampled,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage, textureImageMemory);
 
         transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
-        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-        transitionImageLayout(textureImage, vk::ImageLayout::eTransferDstOptimal, vk::ImageLayout::eShaderReadOnlyOptimal);
+        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth),
+                          static_cast<uint32_t>(texHeight));
+        transitionImageLayout(textureImage, vk::ImageLayout::eTransferDstOptimal,
+                              vk::ImageLayout::eShaderReadOnlyOptimal);
     }
 
     void HelloTriangleApplication::createTextureImageView()
@@ -804,6 +825,9 @@ namespace Chopper
         commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
                                                         *descriptorSets[currentFrame], nullptr);
         commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+
+        ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *commandBuffers[currentFrame]);
+
         commandBuffers[currentFrame].endRendering();
 
         // After rendering, transition the swapchain image to PRESENT_SRC
@@ -981,7 +1005,7 @@ namespace Chopper
     {
         std::array poolSize{
             vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
-            vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT)
+            vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT),
         };
         vk::DescriptorPoolCreateInfo poolInfo{};
         poolInfo.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
@@ -1137,6 +1161,8 @@ namespace Chopper
 
         updateUniformBuffer(currentFrame);
 
+        paintImGui();
+
         device.resetFences(*inFlightFences[currentFrame]);
         commandBuffers[currentFrame].reset();
         recordCommandBuffer(imageIndex);
@@ -1176,6 +1202,145 @@ namespace Chopper
         semaphoreIndex = (semaphoreIndex + 1) % presentCompleteSemaphore.size();
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
+
+    void HelloTriangleApplication::initImGui()
+    {
+        // Create Descriptor Pool
+        // If you wish to load e.g. additional textures you may need to alter pools sizes and maxSets.
+        VkDescriptorPoolSize pool_sizes[] =
+        {
+            {VK_DESCRIPTOR_TYPE_SAMPLER, 1000},
+            {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1000},
+            {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_TEXEL_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1000},
+            {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC, 1000},
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER_DYNAMIC, 1000},
+            {VK_DESCRIPTOR_TYPE_INPUT_ATTACHMENT, 1000}
+        };
+        VkDescriptorPoolCreateInfo pool_info = {};
+        pool_info.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+        pool_info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        pool_info.maxSets = 1000 * IM_ARRAYSIZE(pool_sizes);
+        //for (VkDescriptorPoolSize& pool_size : pool_sizes)
+        //    pool_info.maxSets += pool_size.descriptorCount;
+        pool_info.poolSizeCount = (uint32_t)IM_ARRAYSIZE(pool_sizes);
+        pool_info.pPoolSizes = pool_sizes;
+
+        imgui_descriptor_pool = vk::raii::DescriptorPool(device, pool_info);
+        
+        // Create Framebuffers
+        int w, h;
+        glfwGetFramebufferSize(window, &w, &h);
+
+        IMGUI_CHECKVERSION();
+        ImGui::CreateContext();
+        io = &ImGui::GetIO();
+        //(void)io;
+        io->ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // Enable Keyboard Controls
+        io->ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad; // Enable Gamepad Controls
+        ImGui::GetStyle().FontScaleMain = 1.3f;
+        
+        // Setup Dear ImGui style
+        ImGui::StyleColorsDark();  
+        //ImGui::StyleColorsLight();
+        
+        // Setup Platform/Renderer backends
+        ImGui_ImplGlfw_InitForVulkan(window, true);
+        ImGui_ImplVulkan_InitInfo init_info = {};
+        init_info.ApiVersion = vk::ApiVersion14;
+        // Pass in your value of VkApplicationInfo::apiVersion, otherwise will default to header version.
+        init_info.Instance = *instance;
+        init_info.PhysicalDevice = *physicalDevice;
+        init_info.Device = *device;
+        init_info.QueueFamily = queueIndex;
+        init_info.Queue = *queue;
+        init_info.DescriptorPool = *imgui_descriptor_pool;
+        init_info.DescriptorPoolSize = 0;
+        init_info.RenderPass = nullptr;
+        init_info.MinImageCount = 2;
+        init_info.ImageCount = 2;
+        init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        init_info.UseDynamicRendering = true;
+        init_info.Subpass = 0;
+
+        init_info.Allocator = nullptr;
+        //init_info.CheckVkResultFn = check_vk_result;
+
+        init_info.PipelineRenderingCreateInfo = {};
+        init_info.PipelineRenderingCreateInfo.sType = VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO_KHR;
+        init_info.PipelineRenderingCreateInfo.pNext = nullptr;
+        init_info.PipelineRenderingCreateInfo.viewMask = 0;
+        init_info.PipelineRenderingCreateInfo.colorAttachmentCount = 1;
+        VkFormat format = VkFormat::VK_FORMAT_B8G8R8A8_SRGB;
+        init_info.PipelineRenderingCreateInfo.pColorAttachmentFormats = &format;
+        init_info.PipelineRenderingCreateInfo.depthAttachmentFormat = VK_FORMAT_D32_SFLOAT;
+        init_info.PipelineRenderingCreateInfo.stencilAttachmentFormat = VK_FORMAT_UNDEFINED;
+
+        ImGui_ImplVulkan_Init(&init_info);
+
+        // Load Fonts
+        //style.FontSizeBase = 20.0f;
+        ImFont* font = io->Fonts->AddFontFromFileTTF("../core/resources/fonts/NunitoSans.ttf");
+        IM_ASSERT(font != nullptr);
+        //io->Fonts->Flags |= ImFontAtlasFlags_NoPowerOfTwoHeight;
+        //io->Fonts->AddFontDefault();
+        //io->Fonts->Build();
+        //ImGui::GetStyle().FontSizeBase = 20.0f;
+    }
+
+    void HelloTriangleApplication::paintImGui()
+    {
+        ImGui_ImplVulkan_NewFrame();
+        ImGui_ImplGlfw_NewFrame();
+        ImGui::NewFrame();
+
+        // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
+        if (show_demo_window)
+            ImGui::ShowDemoWindow(&show_demo_window);
+
+        // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
+        {
+            static float f = 0.0f;
+            static int counter = 0;
+
+            ImGui::Begin("Hello, world!"); // Create a window called "Hello, world!" and append into it.
+
+            ImGui::Text("This is some useful text."); // Display some text (you can use a format strings too)
+            ImGui::Checkbox("Demo Window", &show_demo_window); // Edit bools storing our window open/close state
+            ImGui::Checkbox("Another Window", &show_another_window);
+
+            ImGui::SliderFloat("float", &f, 0.0f, 1.0f); // Edit 1 float using a slider from 0.0f to 1.0f
+            ImGui::ColorEdit3("clear color", (float*)&clear_color); // Edit 3 floats representing a color
+
+            if (ImGui::Button("Button"))
+                // Buttons return true when clicked (most widgets return true when edited/activated)
+                counter++;
+            ImGui::SameLine();
+            ImGui::Text("counter = %d", counter);
+
+            ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io->Framerate, io->Framerate);
+            ImGui::End();
+        }
+
+        // 3. Show another simple window.
+        if (show_another_window)
+        {
+            ImGui::Begin("Another Window", &show_another_window);
+            // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+            ImGui::Text("Hello from another window!");
+            if (ImGui::Button("Close Me"))
+                show_another_window = false;
+            ImGui::End();
+        }
+
+        // Rendering
+        ImGui::Render();
+    }
+
 
     std::vector<const char*> HelloTriangleApplication::getRequiredExtensions()
     {

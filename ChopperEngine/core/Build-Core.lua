@@ -5,7 +5,7 @@ project "core"
    targetdir "binaries/%{cfg.buildcfg}"
    staticruntime "off"
 
-   files { "source/**.h", "source/**.cpp", "source/**.cc", "source/**.hh" , "source/**.c", "source/**.hpp"}
+   files { "source/**.h", "source/**.cpp", "source/**.cc", "source/**.hh" , "source/**.c", "source/**.hpp", "../vendor/imgui/**.h", "../vendor/imgui/**.cpp"}
 
    includedirs
     {
@@ -14,6 +14,7 @@ project "core"
     "../vendor/GLM",
     "../vendor/include",
     "../vendor",
+    "../vendor/imgui",
     os.getenv("VULKAN_SDK") .. "/include"
     }
 
