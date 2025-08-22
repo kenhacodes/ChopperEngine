@@ -122,6 +122,7 @@ namespace Chopper
         vk::raii::DeviceMemory depthImageMemory = nullptr;
         vk::raii::ImageView depthImageView = nullptr;
 
+        uint32_t mipLevels = 0;
         vk::raii::Image textureImage = nullptr;
         vk::raii::DeviceMemory textureImageMemory = nullptr;
         vk::raii::ImageView textureImageView = nullptr;
@@ -183,10 +184,12 @@ namespace Chopper
         void createGraphicsPipeline();
         void createCommandPool();
         void createTextureImage();
-        void createImage(uint32_t width, uint32_t height, vk::Format format, vk::ImageTiling tiling,
-                         vk::ImageUsageFlags usage, vk::MemoryPropertyFlags properties, vk::raii::Image& image,
-                         vk::raii::DeviceMemory& imageMemory);
-        void transitionImageLayout(const vk::raii::Image& image, vk::ImageLayout oldLayout, vk::ImageLayout newLayout);
+        void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
+        void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::Format format,
+                                               vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                                               vk::MemoryPropertyFlags properties, vk::raii::Image& image,
+                                               vk::raii::DeviceMemory& imageMemory);
+        void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout, const vk::ImageLayout newLayout, uint32_t mipLevels);
         void copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii::Image& image, uint32_t width, uint32_t height);
         std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands();
         void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer);
@@ -229,8 +232,7 @@ namespace Chopper
         bool hasStencilComponent(vk::Format format);
 
         std::vector<const char*> getRequiredExtensions();
-        vk::raii::ImageView createImageView(vk::raii::Image& image, vk::Format format,
-                                            vk::ImageAspectFlags aspectFlags);
+        vk::raii::ImageView createImageView(const vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) const;
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,
