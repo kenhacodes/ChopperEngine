@@ -104,6 +104,7 @@ namespace Chopper
         vk::raii::DebugUtilsMessengerEXT debugMessenger = nullptr;
         vk::raii::SurfaceKHR surface = nullptr;
         vk::raii::PhysicalDevice physicalDevice = nullptr;
+        vk::SampleCountFlagBits msaaSamples = vk::SampleCountFlagBits::e1;
         vk::raii::Device device = nullptr;
         uint32_t queueIndex = ~0;
         vk::raii::Queue queue = nullptr;
@@ -117,6 +118,10 @@ namespace Chopper
         vk::raii::DescriptorSetLayout descriptorSetLayout = nullptr;
         vk::raii::PipelineLayout pipelineLayout = nullptr;
         vk::raii::Pipeline graphicsPipeline = nullptr;
+
+        vk::raii::Image colorImage = nullptr;
+        vk::raii::DeviceMemory colorImageMemory = nullptr;
+        vk::raii::ImageView colorImageView = nullptr;
 
         vk::raii::Image depthImage = nullptr;
         vk::raii::DeviceMemory depthImageMemory = nullptr;
@@ -184,12 +189,14 @@ namespace Chopper
         void createGraphicsPipeline();
         void createCommandPool();
         void createTextureImage();
-        void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight, uint32_t mipLevels);
-        void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::Format format,
-                                               vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-                                               vk::MemoryPropertyFlags properties, vk::raii::Image& image,
-                                               vk::raii::DeviceMemory& imageMemory);
-        void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout, const vk::ImageLayout newLayout, uint32_t mipLevels);
+        void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
+                             uint32_t mipLevels);
+        void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits numSamples,
+                         vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                         vk::MemoryPropertyFlags properties, vk::raii::Image& image,
+                         vk::raii::DeviceMemory& imageMemory);
+        void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout,
+                                   const vk::ImageLayout newLayout, uint32_t mipLevels);
         void copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii::Image& image, uint32_t width, uint32_t height);
         std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands();
         void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer);
@@ -223,6 +230,19 @@ namespace Chopper
         void createTextureSampler();
         void createDepthResources();
         void loadModel();
+        vk::SampleCountFlagBits getMaxUsableSampleCount();
+        void createColorResources();
+        void transition_image_layout_custom(
+        vk::raii::Image& image,
+        vk::ImageLayout old_layout,
+        vk::ImageLayout new_layout,
+        vk::AccessFlags2 src_access_mask,
+        vk::AccessFlags2 dst_access_mask,
+        vk::PipelineStageFlags2 src_stage_mask,
+        vk::PipelineStageFlags2 dst_stage_mask,
+        vk::ImageAspectFlags aspect_mask
+        );
+
         void initImGui();
         void paintImGui();
 
@@ -232,7 +252,8 @@ namespace Chopper
         bool hasStencilComponent(vk::Format format);
 
         std::vector<const char*> getRequiredExtensions();
-        vk::raii::ImageView createImageView(const vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) const;
+        vk::raii::ImageView createImageView(const vk::raii::Image& image, vk::Format format,
+                                            vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) const;
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,

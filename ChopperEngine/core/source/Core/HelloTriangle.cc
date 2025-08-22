@@ -68,12 +68,14 @@ namespace Chopper
         setupDebugMessenger();
         createSurface();
         pickPhysicalDevice();
+        msaaSamples = getMaxUsableSampleCount();
         createLogicalDevice();
         createSwapChain();
         createImageViews();
         createDescriptorSetLayout();
         createGraphicsPipeline();
         createCommandPool();
+        createColorResources();
         createDepthResources();
         createTextureImage();
         createTextureImageView();
@@ -123,6 +125,7 @@ namespace Chopper
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
+        createColorResources();
         createDepthResources();
     }
 
@@ -441,7 +444,7 @@ namespace Chopper
         rasterizer.lineWidth = 1.0f;
 
         vk::PipelineMultisampleStateCreateInfo multisampling{};
-        multisampling.rasterizationSamples = vk::SampleCountFlagBits::e1;
+        multisampling.rasterizationSamples = msaaSamples;
         multisampling.sampleShadingEnable = vk::False;
 
         vk::PipelineDepthStencilStateCreateInfo depthStencil{};
@@ -513,11 +516,24 @@ namespace Chopper
         commandPool = vk::raii::CommandPool(device, poolInfo);
     }
 
+    void HelloTriangleApplication::createColorResources()
+    {
+        vk::Format colorFormat = swapChainImageFormat;
+
+        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat,
+                    vk::ImageTiling::eOptimal,
+                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal, colorImage, colorImageMemory);
+        colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
+    }
+
     void HelloTriangleApplication::createDepthResources()
     {
         vk::Format depthFormat = findDepthFormat();
 
-        createImage(swapChainExtent.width, swapChainExtent.height, 1, depthFormat, vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment, vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
+        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat,
+                    vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment,
+                    vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
         depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 
         //transitionImageLayout(depthImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
@@ -578,7 +594,8 @@ namespace Chopper
 
         stbi_image_free(pixels);
 
-        createImage(texWidth, texHeight, mipLevels, vk::Format::eR8G8B8A8Srgb, vk::ImageTiling::eOptimal,
+        createImage(texWidth, texHeight, mipLevels, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb,
+                    vk::ImageTiling::eOptimal,
                     vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
                     vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage,
                     textureImageMemory);
@@ -674,9 +691,27 @@ namespace Chopper
         endSingleTimeCommands(*commandBuffer);
     }
 
+    vk::SampleCountFlagBits HelloTriangleApplication::getMaxUsableSampleCount()
+    {
+        vk::PhysicalDeviceProperties physicalDeviceProperties = physicalDevice.getProperties();
+
+        vk::SampleCountFlags counts = physicalDeviceProperties.limits.framebufferColorSampleCounts &
+            physicalDeviceProperties.limits.framebufferDepthSampleCounts;
+        if (counts & vk::SampleCountFlagBits::e64) { return vk::SampleCountFlagBits::e64; }
+        if (counts & vk::SampleCountFlagBits::e32) { return vk::SampleCountFlagBits::e32; }
+        if (counts & vk::SampleCountFlagBits::e16) { return vk::SampleCountFlagBits::e16; }
+        if (counts & vk::SampleCountFlagBits::e8) { return vk::SampleCountFlagBits::e8; }
+        if (counts & vk::SampleCountFlagBits::e4) { return vk::SampleCountFlagBits::e4; }
+        if (counts & vk::SampleCountFlagBits::e2) { return vk::SampleCountFlagBits::e2; }
+
+        return vk::SampleCountFlagBits::e1;
+    }
+
+
     void HelloTriangleApplication::createTextureImageView()
     {
-        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor, mipLevels);
+        textureImageView = createImageView(textureImage, vk::Format::eR8G8B8A8Srgb, vk::ImageAspectFlagBits::eColor,
+                                           mipLevels);
     }
 
     void HelloTriangleApplication::createTextureSampler()
@@ -699,17 +734,20 @@ namespace Chopper
         textureSampler = vk::raii::Sampler(device, samplerInfo);
     }
 
-    vk::raii::ImageView HelloTriangleApplication::createImageView(const vk::raii::Image& image, vk::Format format, vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) const 
+    vk::raii::ImageView HelloTriangleApplication::createImageView(const vk::raii::Image& image, vk::Format format,
+                                                                  vk::ImageAspectFlags aspectFlags,
+                                                                  uint32_t mipLevels) const
     {
         vk::ImageViewCreateInfo viewInfo{};
         viewInfo.image = image;
         viewInfo.viewType = vk::ImageViewType::e2D;
         viewInfo.format = format;
-        viewInfo.subresourceRange = { aspectFlags, 0, mipLevels, 0, 1 };
+        viewInfo.subresourceRange = {aspectFlags, 0, mipLevels, 0, 1};
         return vk::raii::ImageView(device, viewInfo);
     }
 
-    void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::Format format,
+    void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, uint32_t mipLevels,
+                                               vk::SampleCountFlagBits numSamples, vk::Format format,
                                                vk::ImageTiling tiling, vk::ImageUsageFlags usage,
                                                vk::MemoryPropertyFlags properties, vk::raii::Image& image,
                                                vk::raii::DeviceMemory& imageMemory)
@@ -720,7 +758,7 @@ namespace Chopper
         imageInfo.extent = vk::Extent3D{width, height, 1};
         imageInfo.mipLevels = mipLevels;
         imageInfo.arrayLayers = 1;
-        imageInfo.samples = vk::SampleCountFlagBits::e1;
+        imageInfo.samples = numSamples;
         imageInfo.tiling = tiling;
         imageInfo.usage = usage;
         imageInfo.sharingMode = vk::SharingMode::eExclusive;
@@ -846,6 +884,91 @@ namespace Chopper
             vk::PipelineStageFlagBits2::eColorAttachmentOutput // dstStage
         );
 
+        // Transition the multisampled color image to COLOR_ATTACHMENT_OPTIMAL
+        transition_image_layout_custom(
+            colorImage,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eColorAttachmentOptimal,
+            {},
+            vk::AccessFlagBits2::eColorAttachmentWrite,
+            vk::PipelineStageFlagBits2::eTopOfPipe,
+            vk::PipelineStageFlagBits2::eColorAttachmentOutput,
+            vk::ImageAspectFlagBits::eColor
+        );
+
+        // Transition the depth image to DEPTH_ATTACHMENT_OPTIMAL
+        transition_image_layout_custom(
+            depthImage,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eDepthAttachmentOptimal,
+            {},
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::PipelineStageFlagBits2::eTopOfPipe,
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests,
+            vk::ImageAspectFlagBits::eDepth
+        );
+        // Transition depth image to depth attachment optimal layout
+        vk::ImageMemoryBarrier2 depthBarrier = {
+            vk::PipelineStageFlagBits2::eTopOfPipe,
+            {},
+            vk::PipelineStageFlagBits2::eEarlyFragmentTests |
+            vk::PipelineStageFlagBits2::eLateFragmentTests,
+            vk::AccessFlagBits2::eDepthStencilAttachmentRead |
+            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
+            vk::ImageLayout::eUndefined,
+            vk::ImageLayout::eDepthStencilAttachmentOptimal,
+            VK_QUEUE_FAMILY_IGNORED,
+            VK_QUEUE_FAMILY_IGNORED,
+            depthImage,
+            vk::ImageSubresourceRange{
+                vk::ImageAspectFlagBits::eDepth,
+                0,
+                1,
+                0,
+                1
+            }
+        };
+        vk::DependencyInfo depthDependencyInfo = {};
+        depthDependencyInfo.dependencyFlags = {};
+        depthDependencyInfo.imageMemoryBarrierCount = 1;
+        depthDependencyInfo.pImageMemoryBarriers = &depthBarrier;
+        
+        commandBuffers[currentFrame].pipelineBarrier2(depthDependencyInfo);
+        
+        vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
+        vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
+
+        // Color attachment (multisampled) with resolve attachment
+        vk::RenderingAttachmentInfo colorAttachment = {};
+        colorAttachment.imageView = colorImageView;
+        colorAttachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        colorAttachment.resolveMode = vk::ResolveModeFlagBits::eAverage;
+        colorAttachment.resolveImageView = swapChainImageViews[imageIndex];
+        colorAttachment.resolveImageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+        colorAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+        colorAttachment.storeOp = vk::AttachmentStoreOp::eStore;
+        colorAttachment.clearValue = clearColor;
+
+
+        // Depth attachment
+        vk::RenderingAttachmentInfo depthAttachment = {};
+        depthAttachment.imageView = depthImageView;
+        depthAttachment.imageLayout = vk::ImageLayout::eDepthAttachmentOptimal;
+        depthAttachment.loadOp = vk::AttachmentLoadOp::eClear;
+        depthAttachment.storeOp = vk::AttachmentStoreOp::eDontCare;
+        depthAttachment.clearValue = clearDepth;
+
+
+        vk::RenderingInfo renderingInfo = {};
+        renderingInfo.renderArea.offset.setX(0);
+        renderingInfo.renderArea.offset.setY(0);
+        renderingInfo.renderArea.extent = swapChainExtent;
+        renderingInfo.layerCount = 1;
+        renderingInfo.colorAttachmentCount = 1;
+        renderingInfo.pColorAttachments = &colorAttachment;
+        renderingInfo.pDepthAttachment = &depthAttachment;
+
+        /*
         // Transition depth image to depth attachment optimal layout
         vk::ImageMemoryBarrier2 depthBarrier = {
             vk::PipelineStageFlagBits2::eTopOfPipe,
@@ -899,19 +1022,17 @@ namespace Chopper
         renderingInfo.colorAttachmentCount = 1;
         renderingInfo.pColorAttachments = &colorAttachmentInfo;
         renderingInfo.pDepthAttachment = &depthAttachmentInfo;
-
+    */
         commandBuffers[currentFrame].beginRendering(renderingInfo);
         commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
-                                                                 static_cast<float>(swapChainExtent.height), 0.0f,
-                                                                 1.0f));
+        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
         commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
         commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, {0});
-        commandBuffers[currentFrame].bindIndexBuffer(*indexBuffer, 0, vk::IndexType::eUint32);
-        commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-                                                        *descriptorSets[currentFrame], nullptr);
+        commandBuffers[currentFrame].bindIndexBuffer( *indexBuffer, 0, vk::IndexType::eUint32 );
+        commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
         commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
+        // ImGui!
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *commandBuffers[currentFrame]);
 
         commandBuffers[currentFrame].endRendering();
@@ -1187,6 +1308,43 @@ namespace Chopper
         throw std::runtime_error("failed to find suitable memory type!");
     }
 
+    void HelloTriangleApplication::transition_image_layout_custom(
+        vk::raii::Image& image,
+        vk::ImageLayout old_layout,
+        vk::ImageLayout new_layout,
+        vk::AccessFlags2 src_access_mask,
+        vk::AccessFlags2 dst_access_mask,
+        vk::PipelineStageFlags2 src_stage_mask,
+        vk::PipelineStageFlags2 dst_stage_mask,
+        vk::ImageAspectFlags aspect_mask
+    )
+    {
+        vk::ImageMemoryBarrier2 barrier = {};
+        barrier.srcStageMask = src_stage_mask;
+        barrier.srcAccessMask = src_access_mask;
+        barrier.dstStageMask = dst_stage_mask;
+        barrier.dstAccessMask = dst_access_mask;
+        barrier.oldLayout = old_layout;
+        barrier.newLayout = new_layout;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.image = image;
+        barrier.subresourceRange = {
+            aspect_mask,
+            0,
+            1,
+            0,
+            1
+        };
+
+        vk::DependencyInfo dependency_info = {};
+        dependency_info.dependencyFlags = {};
+        dependency_info.imageMemoryBarrierCount = 1;
+        dependency_info.pImageMemoryBarriers = &barrier;
+
+        commandBuffers[currentFrame].pipelineBarrier2(dependency_info);
+    }
+
     void HelloTriangleApplication::createSyncObjects()
     {
         presentCompleteSemaphore.clear();
@@ -1349,7 +1507,7 @@ namespace Chopper
         init_info.RenderPass = nullptr;
         init_info.MinImageCount = 2;
         init_info.ImageCount = 2;
-        init_info.MSAASamples = VK_SAMPLE_COUNT_1_BIT;
+        init_info.MSAASamples = VkSampleCountFlagBits(msaaSamples);
         init_info.UseDynamicRendering = true;
         init_info.Subpass = 0;
 
