@@ -16,6 +16,7 @@
 #include <vulkan/vulkan.hpp>
 #include <vulkan/vulkan_raii.hpp>
 #include <vulkan/vk_platform.h>
+#include "vma/vk_mem_alloc.h"
 
 #define GLFW_INCLUDE_VULKAN 
 #include <GLFW/glfw3.h>
@@ -119,29 +120,29 @@ namespace Chopper
         vk::raii::PipelineLayout pipelineLayout = nullptr;
         vk::raii::Pipeline graphicsPipeline = nullptr;
 
-        vk::raii::Image colorImage = nullptr;
-        vk::raii::DeviceMemory colorImageMemory = nullptr;
+        VkImage colorImage = nullptr;
+        VmaAllocation colorImageAllocation = nullptr;
         vk::raii::ImageView colorImageView = nullptr;
 
-        vk::raii::Image depthImage = nullptr;
-        vk::raii::DeviceMemory depthImageMemory = nullptr;
+        VkImage depthImage = nullptr;
+        VmaAllocation depthImageAllocation = nullptr;
         vk::raii::ImageView depthImageView = nullptr;
 
         uint32_t mipLevels = 0;
-        vk::raii::Image textureImage = nullptr;
-        vk::raii::DeviceMemory textureImageMemory = nullptr;
+        VkImage textureImage = nullptr;
+        VmaAllocation textureImageAllocation = nullptr;
         vk::raii::ImageView textureImageView = nullptr;
         vk::raii::Sampler textureSampler = nullptr;
 
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
-        vk::raii::Buffer vertexBuffer = nullptr;
-        vk::raii::DeviceMemory vertexBufferMemory = nullptr;
-        vk::raii::Buffer indexBuffer = nullptr;
-        vk::raii::DeviceMemory indexBufferMemory = nullptr;
+        VkBuffer vertexBuffer = {};       
+        VmaAllocation vertexBufferAllocation = {}; 
+        VkBuffer indexBuffer = nullptr;
+        VmaAllocation indexBufferAllocation = nullptr;
 
-        std::vector<vk::raii::Buffer> uniformBuffers;
-        std::vector<vk::raii::DeviceMemory> uniformBuffersMemory;
+        std::vector<VkBuffer> uniformBuffers;
+        std::vector<VmaAllocation> uniformBuffersAllocation;
         std::vector<void*> uniformBuffersMapped;
 
         vk::raii::DescriptorPool descriptorPool = nullptr;
@@ -158,13 +159,14 @@ namespace Chopper
 
         bool framebufferResized = false;
 
+        VmaAllocator allocator;
+
         //ImGui
         ImGuiIO* io = nullptr;
         vk::raii::DescriptorPool imgui_descriptor_pool = nullptr;
         bool show_demo_window = true;
         bool show_another_window = false;
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
-
 
         std::vector<const char*> requiredDeviceExtension = {
             vk::KHRSwapchainExtensionName,
@@ -189,23 +191,25 @@ namespace Chopper
         void createGraphicsPipeline();
         void createCommandPool();
         void createTextureImage();
-        void generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth, int32_t texHeight,
-                             uint32_t mipLevels);
-        void createImage(uint32_t width, uint32_t height, uint32_t mipLevels, vk::SampleCountFlagBits numSamples,
-                         vk::Format format, vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-                         vk::MemoryPropertyFlags properties, vk::raii::Image& image,
-                         vk::raii::DeviceMemory& imageMemory);
-        void transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout,
-                                   const vk::ImageLayout newLayout, uint32_t mipLevels);
-        void copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii::Image& image, uint32_t width, uint32_t height);
+        void generateMipmaps(VkImage& image, vk::Format imageFormat, int32_t texWidth,
+                                                   int32_t texHeight, uint32_t mipLevels);
+        void createImage(uint32_t width, uint32_t height, uint32_t mipLevels,
+                                           vk::SampleCountFlagBits numSamples, vk::Format format,
+                                           vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                                           VkImage& image, VmaAllocation& imageAllocation);
+        void transitionImageLayout(const VkImage& image, const vk::ImageLayout oldLayout,
+                                                         const vk::ImageLayout newLayout, uint32_t mipLevels);
+        void copyBufferToImage(const VkBuffer& buffer, VkImage& image,
+                                                     uint32_t width, uint32_t height);
         std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands();
         void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer);
         void createCommandBuffers();
         void recordCommandBuffer(uint32_t imageIndex);
         void createBuffer(vk::DeviceSize size, vk::BufferUsageFlags usage, vk::MemoryPropertyFlags properties,
                           vk::raii::Buffer& buffer, vk::raii::DeviceMemory& bufferMemory);
-        void copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer,
-                        vk::DeviceSize size);
+        void copyBuffer(VkBuffer srcBuffer,
+                        VkBuffer dstBuffer,
+                        VkDeviceSize size);
         void createIndexBuffer();
         void createVertexBuffer();
         uint32_t findMemoryType(uint32_t typeFilter, vk::MemoryPropertyFlags properties);
@@ -233,7 +237,7 @@ namespace Chopper
         vk::SampleCountFlagBits getMaxUsableSampleCount();
         void createColorResources();
         void transition_image_layout_custom(
-        vk::raii::Image& image,
+        VkImage& image,
         vk::ImageLayout old_layout,
         vk::ImageLayout new_layout,
         vk::AccessFlags2 src_access_mask,
@@ -241,8 +245,11 @@ namespace Chopper
         vk::PipelineStageFlags2 src_stage_mask,
         vk::PipelineStageFlags2 dst_stage_mask,
         vk::ImageAspectFlags aspect_mask
-        );
+    );
 
+        void createAllocator(VkInstance instance, VkPhysicalDevice physicalDevice,
+                             VkDevice device);
+        void vmaCleanup();
         void initImGui();
         void paintImGui();
 
@@ -252,8 +259,9 @@ namespace Chopper
         bool hasStencilComponent(vk::Format format);
 
         std::vector<const char*> getRequiredExtensions();
-        vk::raii::ImageView createImageView(const vk::raii::Image& image, vk::Format format,
-                                            vk::ImageAspectFlags aspectFlags, uint32_t mipLevels) const;
+        vk::raii::ImageView createImageView(const VkImage& image, vk::Format format,
+                                                                  vk::ImageAspectFlags aspectFlags,
+                                                                  uint32_t mipLevels) const;
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,

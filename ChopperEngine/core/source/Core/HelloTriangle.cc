@@ -24,8 +24,8 @@ namespace Chopper
     {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        //glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
-        //glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
+        // glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
+        // glfwWindowHint(GLFW_TRANSPARENT_FRAMEBUFFER, GLFW_TRUE);
         monitors = glfwGetMonitors(&monitors_count);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Chopper Engine", nullptr, nullptr);
         glfwSetWindowUserPointer(window, this);
@@ -70,6 +70,7 @@ namespace Chopper
         pickPhysicalDevice();
         msaaSamples = getMaxUsableSampleCount();
         createLogicalDevice();
+        createAllocator(*instance, *physicalDevice, *device);
         createSwapChain();
         createImageViews();
         createDescriptorSetLayout();
@@ -96,9 +97,25 @@ namespace Chopper
         swapChain = nullptr;
     }
 
+    void HelloTriangleApplication::vmaCleanup()
+    {
+        vmaDestroyBuffer(allocator, vertexBuffer, vertexBufferAllocation);
+        vmaDestroyBuffer(allocator, indexBuffer, indexBufferAllocation);
+        vmaDestroyImage(allocator, colorImage, colorImageAllocation);
+        vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+        vmaDestroyImage(allocator, textureImage, textureImageAllocation);
+        for (int i = 0; i < uniformBuffers.size(); ++i)
+        {
+            vmaDestroyBuffer(allocator, uniformBuffers[i], uniformBuffersAllocation[i]);
+        }
+        vmaDestroyAllocator(allocator);
+    }
+
     void HelloTriangleApplication::cleanup()
     {
         device.waitIdle();
+
+        vmaCleanup();
 
         ImGui_ImplVulkan_Shutdown();
         ImGui_ImplGlfw_Shutdown();
@@ -333,6 +350,17 @@ namespace Chopper
         debugMessenger = instance.createDebugUtilsMessengerEXT(debugUtilsMessengerCreateInfoEXT);
     }
 
+    void HelloTriangleApplication::createAllocator(VkInstance instance, VkPhysicalDevice physicalDevice,
+                                                   VkDevice device)
+    {
+        VmaAllocatorCreateInfo allocatorInfo = {};
+        allocatorInfo.physicalDevice = physicalDevice;
+        allocatorInfo.device = device;
+        allocatorInfo.instance = instance;
+
+        vmaCreateAllocator(&allocatorInfo, &allocator);
+    }
+
     void HelloTriangleApplication::createSurface()
     {
         VkSurfaceKHR _surface;
@@ -520,10 +548,17 @@ namespace Chopper
     {
         vk::Format colorFormat = swapChainImageFormat;
 
-        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, colorFormat,
-                    vk::ImageTiling::eOptimal,
-                    vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
-                    vk::MemoryPropertyFlagBits::eDeviceLocal, colorImage, colorImageMemory);
+        createImage(
+        swapChainExtent.width,
+        swapChainExtent.height,
+        1,
+        msaaSamples,
+        colorFormat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
+        colorImage,                // VkImage
+        colorImageAllocation       // VmaAllocation
+    );
         colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
     }
 
@@ -531,9 +566,17 @@ namespace Chopper
     {
         vk::Format depthFormat = findDepthFormat();
 
-        createImage(swapChainExtent.width, swapChainExtent.height, 1, msaaSamples, depthFormat,
-                    vk::ImageTiling::eOptimal, vk::ImageUsageFlagBits::eDepthStencilAttachment,
-                    vk::MemoryPropertyFlagBits::eDeviceLocal, depthImage, depthImageMemory);
+        createImage(
+        swapChainExtent.width,
+        swapChainExtent.height,
+        1,
+        msaaSamples,
+        depthFormat,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eDepthStencilAttachment,
+        depthImage,               // VkImage
+        depthImageAllocation      // VmaAllocation
+    );
         depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 
         //transitionImageLayout(depthImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
@@ -570,45 +613,79 @@ namespace Chopper
     }
 
     void HelloTriangleApplication::createTextureImage()
+{
+    int texWidth, texHeight, texChannels;
+    stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+    vk::DeviceSize imageSize = texWidth * texHeight * 4;
+    mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+
+    if (!pixels)
     {
-        int texWidth, texHeight, texChannels;
-        stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-        vk::DeviceSize imageSize = texWidth * texHeight * 4;
-        mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-
-        if (!pixels)
-        {
-            throw std::runtime_error("failed to load texture image!");
-        }
-
-        vk::raii::Buffer stagingBuffer({});
-        vk::raii::DeviceMemory stagingBufferMemory({});
-        createBuffer(imageSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                     stagingBuffer, stagingBufferMemory);
-
-
-        void* data = stagingBufferMemory.mapMemory(0, imageSize);
-        memcpy(data, pixels, imageSize);
-        stagingBufferMemory.unmapMemory();
-
-        stbi_image_free(pixels);
-
-        createImage(texWidth, texHeight, mipLevels, vk::SampleCountFlagBits::e1, vk::Format::eR8G8B8A8Srgb,
-                    vk::ImageTiling::eOptimal,
-                    vk::ImageUsageFlagBits::eTransferSrc | vk::ImageUsageFlagBits::eTransferDst |
-                    vk::ImageUsageFlagBits::eSampled, vk::MemoryPropertyFlagBits::eDeviceLocal, textureImage,
-                    textureImageMemory);
-
-        transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
-                              mipLevels);
-        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth),
-                          static_cast<uint32_t>(texHeight));
-
-        generateMipmaps(textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
+        throw std::runtime_error("failed to load texture image!");
     }
 
-    void HelloTriangleApplication::generateMipmaps(vk::raii::Image& image, vk::Format imageFormat, int32_t texWidth,
+    // ---------------------------
+    // 1. Create staging buffer (CPU visible)
+    // ---------------------------
+    VkBuffer stagingBuffer;
+    VmaAllocation stagingAllocation;
+    VmaAllocationInfo stagingAllocInfo{};
+
+    VkBufferCreateInfo bufferInfo{};
+    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+    bufferInfo.size = imageSize;
+    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                      VMA_ALLOCATION_CREATE_MAPPED_BIT; // so we can memcpy directly
+
+    if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &stagingBuffer, &stagingAllocation, &stagingAllocInfo) != VK_SUCCESS)
+    {
+        throw std::runtime_error("failed to create staging buffer for texture!");
+    }
+
+    // Copy pixels into mapped memory
+    memcpy(stagingAllocInfo.pMappedData, pixels, static_cast<size_t>(imageSize));
+
+    stbi_image_free(pixels);
+
+    // ---------------------------
+    // 2. Create GPU-only texture image with mip levels
+    // ---------------------------
+    createImage(
+        texWidth,
+        texHeight,
+        mipLevels,
+        vk::SampleCountFlagBits::e1,
+        vk::Format::eR8G8B8A8Srgb,
+        vk::ImageTiling::eOptimal,
+        vk::ImageUsageFlagBits::eTransferSrc |    // needed for mipmap generation
+        vk::ImageUsageFlagBits::eTransferDst |    // we copy into it from staging
+        vk::ImageUsageFlagBits::eSampled,
+        textureImage,                             // VkImage
+        textureImageAllocation                    // VmaAllocation
+    );
+
+    // ---------------------------
+    // 3. Transition, copy, generate mipmaps
+    // ---------------------------
+    transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
+
+    copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
+
+    generateMipmaps(textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
+
+    // ---------------------------
+    // 4. Cleanup staging
+    // ---------------------------
+    vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+}
+
+
+    void HelloTriangleApplication::generateMipmaps(VkImage& image, vk::Format imageFormat, int32_t texWidth,
                                                    int32_t texHeight, uint32_t mipLevels)
     {
         // Check if image format supports linear blit-ing
@@ -734,7 +811,7 @@ namespace Chopper
         textureSampler = vk::raii::Sampler(device, samplerInfo);
     }
 
-    vk::raii::ImageView HelloTriangleApplication::createImageView(const vk::raii::Image& image, vk::Format format,
+    vk::raii::ImageView HelloTriangleApplication::createImageView(const VkImage& image, vk::Format format,
                                                                   vk::ImageAspectFlags aspectFlags,
                                                                   uint32_t mipLevels) const
     {
@@ -747,35 +824,37 @@ namespace Chopper
     }
 
     void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, uint32_t mipLevels,
-                                               vk::SampleCountFlagBits numSamples, vk::Format format,
-                                               vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-                                               vk::MemoryPropertyFlags properties, vk::raii::Image& image,
-                                               vk::raii::DeviceMemory& imageMemory)
+                                           vk::SampleCountFlagBits numSamples, vk::Format format,
+                                           vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                                           VkImage& image, VmaAllocation& imageAllocation)
+{
+    VkImageCreateInfo imageInfo{};
+    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+    imageInfo.imageType = VK_IMAGE_TYPE_2D;
+    imageInfo.extent.width = width;
+    imageInfo.extent.height = height;
+    imageInfo.extent.depth = 1;
+    imageInfo.mipLevels = mipLevels;
+    imageInfo.arrayLayers = 1;
+    imageInfo.format = static_cast<VkFormat>(format);
+    imageInfo.tiling = static_cast<VkImageTiling>(tiling);
+    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    imageInfo.usage = static_cast<VkImageUsageFlags>(usage);
+    imageInfo.samples = static_cast<VkSampleCountFlagBits>(numSamples);
+    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+    VmaAllocationCreateInfo allocInfo{};
+    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;  // VRAM preferred
+    // For GPU-only images (textures, depth, color attachments), device-local is usually best.
+
+    if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &image, &imageAllocation, nullptr) != VK_SUCCESS)
     {
-        vk::ImageCreateInfo imageInfo{};
-        imageInfo.imageType = vk::ImageType::e2D;
-        imageInfo.format = format;
-        imageInfo.extent = vk::Extent3D{width, height, 1};
-        imageInfo.mipLevels = mipLevels;
-        imageInfo.arrayLayers = 1;
-        imageInfo.samples = numSamples;
-        imageInfo.tiling = tiling;
-        imageInfo.usage = usage;
-        imageInfo.sharingMode = vk::SharingMode::eExclusive;
-        imageInfo.initialLayout = vk::ImageLayout::eUndefined;
-
-        image = vk::raii::Image(device, imageInfo);
-
-        vk::MemoryRequirements memRequirements = image.getMemoryRequirements();
-        vk::MemoryAllocateInfo allocInfo{};
-        allocInfo.allocationSize = memRequirements.size;
-        allocInfo.memoryTypeIndex = findMemoryType(memRequirements.memoryTypeBits, properties);
-
-        imageMemory = vk::raii::DeviceMemory(device, allocInfo);
-        image.bindMemory(imageMemory, 0);
+        throw std::runtime_error("failed to create image with VMA!");
     }
+}
 
-    void HelloTriangleApplication::transitionImageLayout(const vk::raii::Image& image, const vk::ImageLayout oldLayout,
+
+    void HelloTriangleApplication::transitionImageLayout(const VkImage& image, const vk::ImageLayout oldLayout,
                                                          const vk::ImageLayout newLayout, uint32_t mipLevels)
     {
         auto commandBuffer = beginSingleTimeCommands();
@@ -814,7 +893,7 @@ namespace Chopper
         endSingleTimeCommands(*commandBuffer);
     }
 
-    void HelloTriangleApplication::copyBufferToImage(const vk::raii::Buffer& buffer, vk::raii::Image& image,
+    void HelloTriangleApplication::copyBufferToImage(const VkBuffer& buffer, VkImage& image,
                                                      uint32_t width, uint32_t height)
     {
         std::unique_ptr<vk::raii::CommandBuffer> commandBuffer = beginSingleTimeCommands();
@@ -932,9 +1011,9 @@ namespace Chopper
         depthDependencyInfo.dependencyFlags = {};
         depthDependencyInfo.imageMemoryBarrierCount = 1;
         depthDependencyInfo.pImageMemoryBarriers = &depthBarrier;
-        
+
         commandBuffers[currentFrame].pipelineBarrier2(depthDependencyInfo);
-        
+
         vk::ClearValue clearColor = vk::ClearColorValue(0.0f, 0.0f, 0.0f, 1.0f);
         vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
 
@@ -1025,11 +1104,14 @@ namespace Chopper
     */
         commandBuffers[currentFrame].beginRendering(renderingInfo);
         commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
-        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width), static_cast<float>(swapChainExtent.height), 0.0f, 1.0f));
+        commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
+                                                                 static_cast<float>(swapChainExtent.height), 0.0f,
+                                                                 1.0f));
         commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
-        commandBuffers[currentFrame].bindVertexBuffers(0, *vertexBuffer, {0});
-        commandBuffers[currentFrame].bindIndexBuffer( *indexBuffer, 0, vk::IndexType::eUint32 );
-        commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0, *descriptorSets[currentFrame], nullptr);
+        commandBuffers[currentFrame].bindVertexBuffers(0, vk::Buffer(vertexBuffer), {0});
+        commandBuffers[currentFrame].bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint32);
+        commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
+                                                        *descriptorSets[currentFrame], nullptr);
         commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
 
         // ImGui!
@@ -1132,25 +1214,80 @@ namespace Chopper
 
     void HelloTriangleApplication::createVertexBuffer()
     {
+        //-------------------------------------------------------- Old way
+        /*
+        
         vk::DeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+        
+        // 1. Create staging buffer
         vk::raii::Buffer stagingBuffer({});
+
         vk::raii::DeviceMemory stagingBufferMemory({});
+        
         createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
                      vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
                      stagingBuffer, stagingBufferMemory);
 
         void* dataStaging = stagingBufferMemory.mapMemory(0, bufferSize);
+        // Copy vertex data
         memcpy(dataStaging, vertices.data(), bufferSize);
         stagingBufferMemory.unmapMemory();
+        // 2. Create GPU-local vertex buffer
 
         createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eVertexBuffer,
                      vk::MemoryPropertyFlagBits::eDeviceLocal, vertexBuffer, vertexBufferMemory);
 
+        // 3. Copy staging → vertex buffer
         copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+        */
+
+        //-------------------------------------------------------- VMA way underneath
+
+        VkDeviceSize bufferSize = sizeof(vertices[0]) * vertices.size();
+
+        // 1. Create staging buffer (CPU-visible, for uploading data)
+        VkBuffer stagingBuffer;
+        VmaAllocation stagingAllocation;
+
+        VkBufferCreateInfo stagingInfo = {};
+        stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        stagingInfo.size = bufferSize;
+        stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+
+        VmaAllocationCreateInfo stagingAllocInfo = {};
+        stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT; // CPU write access
+
+        VmaAllocationInfo stagingAllocDetails;
+        vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo,
+                        &stagingBuffer, &stagingAllocation, &stagingAllocDetails);
+
+        // Copy vertex data
+        memcpy(stagingAllocDetails.pMappedData, vertices.data(), (size_t)bufferSize);
+
+        // 2. Create GPU-local vertex buffer
+        VkBufferCreateInfo vertexInfo = {};
+        vertexInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        vertexInfo.size = bufferSize;
+        vertexInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
+
+        VmaAllocationCreateInfo vertexAllocInfo = {};
+        vertexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE; // Let VMA choose VRAM
+
+        vmaCreateBuffer(allocator, &vertexInfo, &vertexAllocInfo,
+                        &vertexBuffer, &vertexBufferAllocation, nullptr);
+
+        // 3. Copy staging → vertex buffer
+        copyBuffer(stagingBuffer, vertexBuffer, bufferSize);
+
+        // 4. Cleanup staging
+        vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
     }
 
-    void HelloTriangleApplication::copyBuffer(vk::raii::Buffer& srcBuffer, vk::raii::Buffer& dstBuffer,
-                                              vk::DeviceSize size)
+    void HelloTriangleApplication::copyBuffer(VkBuffer srcBuffer,
+                                              VkBuffer dstBuffer,
+                                              VkDeviceSize size)
     {
         vk::CommandBufferAllocateInfo allocInfo{};
         allocInfo.commandPool = commandPool;
@@ -1159,7 +1296,7 @@ namespace Chopper
 
         vk::raii::CommandBuffer commandCopyBuffer = std::move(device.allocateCommandBuffers(allocInfo).front());
         commandCopyBuffer.begin(vk::CommandBufferBeginInfo{vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
-        commandCopyBuffer.copyBuffer(*srcBuffer, *dstBuffer, vk::BufferCopy(0, 0, size));
+        commandCopyBuffer.copyBuffer(srcBuffer, dstBuffer, vk::BufferCopy(0, 0, size));
         commandCopyBuffer.end();
         vk::SubmitInfo submit_info = {};
         submit_info.commandBufferCount = 1;
@@ -1170,43 +1307,105 @@ namespace Chopper
 
     void HelloTriangleApplication::createIndexBuffer()
     {
+        // 1. Create staging buffer (CPU-visible, for uploading data)
         vk::DeviceSize bufferSize = sizeof(indices[0]) * indices.size();
 
-        vk::raii::Buffer stagingBuffer({});
-        vk::raii::DeviceMemory stagingBufferMemory({});
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
-                     vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
-                     stagingBuffer, stagingBufferMemory);
+        VkBuffer stagingBuffer;
+        VmaAllocation stagingAllocation;
 
-        void* data = stagingBufferMemory.mapMemory(0, bufferSize);
-        memcpy(data, indices.data(), (size_t)bufferSize);
-        stagingBufferMemory.unmapMemory();
+        VkBufferCreateInfo stagingInfo = {};
+        stagingInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        stagingInfo.size = bufferSize;
+        stagingInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        stagingInfo.pNext = nullptr;
 
-        createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer,
-                     vk::MemoryPropertyFlagBits::eDeviceLocal, indexBuffer, indexBufferMemory);
+        VmaAllocationCreateInfo stagingAllocInfo = {};
+        stagingAllocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        stagingAllocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT; // CPU write access
 
+        VmaAllocationInfo stagingAllocDetails;
+        vmaCreateBuffer(allocator, &stagingInfo, &stagingAllocInfo,
+                        &stagingBuffer, &stagingAllocation, &stagingAllocDetails);
+
+        // Copy vertex data
+        memcpy(stagingAllocDetails.pMappedData, indices.data(), (size_t)bufferSize);
+
+        // 2. Create GPU-local vertex buffer
+        VkBufferCreateInfo indexInfo = {};
+        indexInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        indexInfo.size = bufferSize;
+        indexInfo.usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT;
+
+        VmaAllocationCreateInfo indexAllocInfo = {};
+        indexAllocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE; // Let VMA choose VRAM
+
+        vmaCreateBuffer(allocator, &indexInfo, &indexAllocInfo,
+                        &indexBuffer, &indexBufferAllocation, nullptr);
+
+        // 3. Copy staging → index buffer
         copyBuffer(stagingBuffer, indexBuffer, bufferSize);
-    }
 
-    void HelloTriangleApplication::createUniformBuffers()
+        // 4. Cleanup staging
+        vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
+
+        /*
+                // 1. Create staging buffer
+                vk::raii::Buffer stagingBuffer({});
+                vk::raii::DeviceMemory stagingBufferMemory({});
+                
+                createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferSrc,
+                             vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent,
+                             stagingBuffer, stagingBufferMemory);
+        
+                void* data = stagingBufferMemory.mapMemory(0, bufferSize);
+                // Copy vertex data
+                memcpy(data, indices.data(), (size_t)bufferSize);
+                stagingBufferMemory.unmapMemory();
+        // 2. Create GPU-local vertex buffer
+                createBuffer(bufferSize, vk::BufferUsageFlagBits::eTransferDst | vk::BufferUsageFlagBits::eIndexBuffer,
+                             vk::MemoryPropertyFlagBits::eDeviceLocal, indexBuffer, indexBufferMemory);
+        // 3. Copy staging → vertex buffer
+                copyBuffer(*stagingBuffer, *indexBuffer, bufferSize);
+        */
+    }
+void HelloTriangleApplication::createUniformBuffers()
+{
+    uniformBuffers.clear();
+    uniformBuffersAllocation.clear();
+    uniformBuffersMapped.clear();
+
+    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+    uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+    uniformBuffersAllocation.resize(MAX_FRAMES_IN_FLIGHT);
+    uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
     {
-        uniformBuffers.clear();
-        uniformBuffersMemory.clear();
-        uniformBuffersMapped.clear();
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = bufferSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
 
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                          VMA_ALLOCATION_CREATE_MAPPED_BIT;  // keep it mapped
+
+        VmaAllocationInfo vmaAllocDetails{};
+        if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo,
+                            &uniformBuffers[i], &uniformBuffersAllocation[i], &vmaAllocDetails) != VK_SUCCESS)
         {
-            vk::DeviceSize bufferSize = sizeof(UniformBufferObject);
-            vk::raii::Buffer buffer({});
-            vk::raii::DeviceMemory bufferMem({});
-            createBuffer(bufferSize, vk::BufferUsageFlagBits::eUniformBuffer,
-                         vk::MemoryPropertyFlagBits::eHostVisible | vk::MemoryPropertyFlagBits::eHostCoherent, buffer,
-                         bufferMem);
-            uniformBuffers.emplace_back(std::move(buffer));
-            uniformBuffersMemory.emplace_back(std::move(bufferMem));
-            uniformBuffersMapped.emplace_back(uniformBuffersMemory[i].mapMemory(0, bufferSize));
+            throw std::runtime_error("failed to create uniform buffer with VMA!");
         }
+
+        // Already mapped because of the flag
+        uniformBuffersMapped[i] = vmaAllocDetails.pMappedData;
     }
+}
+
 
     void HelloTriangleApplication::createDescriptorPool()
     {
@@ -1309,7 +1508,7 @@ namespace Chopper
     }
 
     void HelloTriangleApplication::transition_image_layout_custom(
-        vk::raii::Image& image,
+        VkImage& image,
         vk::ImageLayout old_layout,
         vk::ImageLayout new_layout,
         vk::AccessFlags2 src_access_mask,
@@ -1541,10 +1740,9 @@ namespace Chopper
         ImGui_ImplVulkan_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-
         // 1. Show the big demo window (Most of the sample code is in ImGui::ShowDemoWindow()! You can browse its code to learn more about Dear ImGui!).
-        if (show_demo_window)
-            ImGui::ShowDemoWindow(&show_demo_window);
+        //if (show_demo_window)
+        //    ImGui::ShowDemoWindow(&show_demo_window);
 
         // 2. Show a simple window that we create ourselves. We use a Begin/End pair to create a named window.
         {
@@ -1570,6 +1768,7 @@ namespace Chopper
             ImGui::End();
         }
 
+/*
         // 3. Show another simple window.
         if (show_another_window)
         {
@@ -1580,7 +1779,7 @@ namespace Chopper
                 show_another_window = false;
             ImGui::End();
         }
-
+*/
         // Rendering
         ImGui::Render();
     }
