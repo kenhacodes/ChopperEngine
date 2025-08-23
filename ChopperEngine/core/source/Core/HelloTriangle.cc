@@ -139,6 +139,9 @@ namespace Chopper
 
         device.waitIdle();
 
+        vmaDestroyImage(allocator, colorImage, colorImageAllocation);
+        vmaDestroyImage(allocator, depthImage, depthImageAllocation);
+        
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
