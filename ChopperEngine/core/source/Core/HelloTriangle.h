@@ -36,6 +36,7 @@
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_vulkan.h>
 
+#include "Camera.h"
 
 namespace Chopper
 {
@@ -45,6 +46,8 @@ namespace Chopper
     const std::string MODEL_PATH = "testmodels/hercules_kalliope/hercules_kalliope.obj";
     const std::string TEXTURE_PATH = "testmodels/hercules_kalliope/T_Herkules_Kalliope.png";
     constexpr int MAX_FRAMES_IN_FLIGHT = 2;
+    // Define the number of objects to render
+    constexpr int MAX_OBJECTS = 3;
 
     const std::vector validationLayers = {
         "VK_LAYER_KHRONOS_validation"
@@ -55,6 +58,35 @@ namespace Chopper
 #else
     constexpr bool enableValidationLayers = true;
 #endif
+
+    // Define a structure to hold per-object data
+    struct GameObject
+    {
+        // Transform properties
+        glm::vec3 position = {0.0f, 0.0f, 0.0f};
+        glm::vec3 rotation = {0.0f, 0.0f, 0.0f};
+        glm::vec3 scale = {1.0f, 1.0f, 1.0f};
+
+        // Uniform buffer for this object (one per frame in flight)
+        std::vector<VkBuffer> uniformBuffers;
+        std::vector<VmaAllocation> uniformBuffersAllocation;
+        std::vector<void*> uniformBuffersMapped;
+
+        // Descriptor sets for this object (one per frame in flight)
+        std::vector<vk::raii::DescriptorSet> descriptorSets;
+
+        // Calculate model matrix based on position, rotation, and scale
+        glm::mat4 getModelMatrix() const
+        {
+            glm::mat4 model = glm::mat4(1.0f);
+            model = glm::translate(model, position);
+            model = glm::rotate(model, rotation.x, glm::vec3(1.0f, 0.0f, 0.0f));
+            model = glm::rotate(model, rotation.y, glm::vec3(0.0f, 1.0f, 0.0f));
+            model = glm::rotate(model, rotation.z, glm::vec3(0.0f, 0.0f, 1.0f));
+            model = glm::scale(model, scale);
+            return model;
+        }
+    };
 
     struct Vertex
     {
@@ -85,9 +117,9 @@ namespace Chopper
 
     struct UniformBufferObject
     {
-        glm::mat4 model;
-        glm::mat4 view;
-        glm::mat4 proj;
+        alignas(16) glm::mat4 model;
+        alignas(16) glm::mat4 view;
+        alignas(16) glm::mat4 proj;
     };
 
 
@@ -136,17 +168,17 @@ namespace Chopper
 
         std::vector<Vertex> vertices;
         std::vector<uint32_t> indices;
-        VkBuffer vertexBuffer = {};       
-        VmaAllocation vertexBufferAllocation = {}; 
+        VkBuffer vertexBuffer = {};
+        VmaAllocation vertexBufferAllocation = {};
         VkBuffer indexBuffer = nullptr;
         VmaAllocation indexBufferAllocation = nullptr;
 
-        std::vector<VkBuffer> uniformBuffers;
-        std::vector<VmaAllocation> uniformBuffersAllocation;
-        std::vector<void*> uniformBuffersMapped;
+        //std::vector<VkBuffer> uniformBuffers;
+        //std::vector<VmaAllocation> uniformBuffersAllocation;
+        //std::vector<void*> uniformBuffersMapped;
 
         vk::raii::DescriptorPool descriptorPool = nullptr;
-        std::vector<vk::raii::DescriptorSet> descriptorSets;
+        //std::vector<vk::raii::DescriptorSet> descriptorSets;
 
         vk::raii::CommandPool commandPool = nullptr;
         std::vector<vk::raii::CommandBuffer> commandBuffers;
@@ -157,9 +189,16 @@ namespace Chopper
         uint32_t semaphoreIndex = 0;
         uint32_t currentFrame = 0;
 
+        // Array of game objects to render
+        std::array<GameObject, MAX_OBJECTS> gameObjects;
+
         bool framebufferResized = false;
 
         VmaAllocator allocator;
+
+        Camera camera_;
+        double delta_time = 0.0;
+        double last_frame_time = 0.0;
 
         //ImGui
         ImGuiIO* io = nullptr;
@@ -192,15 +231,15 @@ namespace Chopper
         void createCommandPool();
         void createTextureImage();
         void generateMipmaps(VkImage& image, vk::Format imageFormat, int32_t texWidth,
-                                                   int32_t texHeight, uint32_t mipLevels);
+                             int32_t texHeight, uint32_t mipLevels);
         void createImage(uint32_t width, uint32_t height, uint32_t mipLevels,
-                                           vk::SampleCountFlagBits numSamples, vk::Format format,
-                                           vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-                                           VkImage& image, VmaAllocation& imageAllocation);
+                         vk::SampleCountFlagBits numSamples, vk::Format format,
+                         vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                         VkImage& image, VmaAllocation& imageAllocation);
         void transitionImageLayout(const VkImage& image, const vk::ImageLayout oldLayout,
-                                                         const vk::ImageLayout newLayout, uint32_t mipLevels);
+                                   const vk::ImageLayout newLayout, uint32_t mipLevels);
         void copyBufferToImage(const VkBuffer& buffer, VkImage& image,
-                                                     uint32_t width, uint32_t height);
+                               uint32_t width, uint32_t height);
         std::unique_ptr<vk::raii::CommandBuffer> beginSingleTimeCommands();
         void endSingleTimeCommands(vk::raii::CommandBuffer& commandBuffer);
         void createCommandBuffers();
@@ -237,21 +276,22 @@ namespace Chopper
         vk::SampleCountFlagBits getMaxUsableSampleCount();
         void createColorResources();
         void transition_image_layout_custom(
-        VkImage& image,
-        vk::ImageLayout old_layout,
-        vk::ImageLayout new_layout,
-        vk::AccessFlags2 src_access_mask,
-        vk::AccessFlags2 dst_access_mask,
-        vk::PipelineStageFlags2 src_stage_mask,
-        vk::PipelineStageFlags2 dst_stage_mask,
-        vk::ImageAspectFlags aspect_mask
-    );
-
+            VkImage& image,
+            vk::ImageLayout old_layout,
+            vk::ImageLayout new_layout,
+            vk::AccessFlags2 src_access_mask,
+            vk::AccessFlags2 dst_access_mask,
+            vk::PipelineStageFlags2 src_stage_mask,
+            vk::PipelineStageFlags2 dst_stage_mask,
+            vk::ImageAspectFlags aspect_mask
+        );
+        void setupGameObjects();
         void createAllocator(VkInstance instance, VkPhysicalDevice physicalDevice,
                              VkDevice device);
         void vmaCleanup();
         void initImGui();
         void paintImGui();
+        void initCamera();
 
         vk::Format findSupportedFormat(const std::vector<vk::Format>& candidates, vk::ImageTiling tiling,
                                        vk::FormatFeatureFlags features);
@@ -260,8 +300,8 @@ namespace Chopper
 
         std::vector<const char*> getRequiredExtensions();
         vk::raii::ImageView createImageView(const VkImage& image, vk::Format format,
-                                                                  vk::ImageAspectFlags aspectFlags,
-                                                                  uint32_t mipLevels) const;
+                                            vk::ImageAspectFlags aspectFlags,
+                                            uint32_t mipLevels) const;
 
         static VKAPI_ATTR vk::Bool32 VKAPI_CALL debugCallback(vk::DebugUtilsMessageSeverityFlagBitsEXT severity,
                                                               vk::DebugUtilsMessageTypeFlagsEXT type,

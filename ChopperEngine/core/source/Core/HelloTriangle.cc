@@ -54,7 +54,12 @@ namespace Chopper
         initImGui();
         while (!glfwWindowShouldClose(window))
         {
+            double current_time = glfwGetTime(); // time in seconds since glfwInit
+            delta_time = current_time - last_frame_time;
+            last_frame_time = current_time;
+
             glfwPollEvents();
+            camera_.update(delta_time);
             drawFrame();
         }
         device.waitIdle();
@@ -81,7 +86,9 @@ namespace Chopper
         createTextureImage();
         createTextureImageView();
         createTextureSampler();
+        initCamera();
         loadModel();
+        setupGameObjects();
         createVertexBuffer();
         createIndexBuffer();
         createUniformBuffers();
@@ -104,9 +111,12 @@ namespace Chopper
         vmaDestroyImage(allocator, colorImage, colorImageAllocation);
         vmaDestroyImage(allocator, depthImage, depthImageAllocation);
         vmaDestroyImage(allocator, textureImage, textureImageAllocation);
-        for (int i = 0; i < uniformBuffers.size(); ++i)
+        for (auto& gameObject : gameObjects)
         {
-            vmaDestroyBuffer(allocator, uniformBuffers[i], uniformBuffersAllocation[i]);
+            for (int i = 0; i < gameObject.uniformBuffers.size(); ++i)
+            {
+                vmaDestroyBuffer(allocator, gameObject.uniformBuffers[i], gameObject.uniformBuffersAllocation[i]);
+            }
         }
         vmaDestroyAllocator(allocator);
     }
@@ -126,6 +136,13 @@ namespace Chopper
         glfwTerminate();
     }
 
+    void HelloTriangleApplication::initCamera()
+    {
+        int width = 0, height = 0;
+        glfwGetFramebufferSize(window, &width, &height);
+        camera_.init(window, width, height);
+    }
+
     void HelloTriangleApplication::recreateSwapChain()
     {
         //printf("Recreating Swapchain...\n");
@@ -141,7 +158,7 @@ namespace Chopper
 
         vmaDestroyImage(allocator, colorImage, colorImageAllocation);
         vmaDestroyImage(allocator, depthImage, depthImageAllocation);
-        
+
         cleanupSwapChain();
         createSwapChain();
         createImageViews();
@@ -552,16 +569,16 @@ namespace Chopper
         vk::Format colorFormat = swapChainImageFormat;
 
         createImage(
-        swapChainExtent.width,
-        swapChainExtent.height,
-        1,
-        msaaSamples,
-        colorFormat,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
-        colorImage,                // VkImage
-        colorImageAllocation       // VmaAllocation
-    );
+            swapChainExtent.width,
+            swapChainExtent.height,
+            1,
+            msaaSamples,
+            colorFormat,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eTransientAttachment | vk::ImageUsageFlagBits::eColorAttachment,
+            colorImage, // VkImage
+            colorImageAllocation // VmaAllocation
+        );
         colorImageView = createImageView(colorImage, colorFormat, vk::ImageAspectFlagBits::eColor, 1);
     }
 
@@ -570,16 +587,16 @@ namespace Chopper
         vk::Format depthFormat = findDepthFormat();
 
         createImage(
-        swapChainExtent.width,
-        swapChainExtent.height,
-        1,
-        msaaSamples,
-        depthFormat,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eDepthStencilAttachment,
-        depthImage,               // VkImage
-        depthImageAllocation      // VmaAllocation
-    );
+            swapChainExtent.width,
+            swapChainExtent.height,
+            1,
+            msaaSamples,
+            depthFormat,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eDepthStencilAttachment,
+            depthImage, // VkImage
+            depthImageAllocation // VmaAllocation
+        );
         depthImageView = createImageView(depthImage, depthFormat, vk::ImageAspectFlagBits::eDepth, 1);
 
         //transitionImageLayout(depthImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal);
@@ -616,76 +633,79 @@ namespace Chopper
     }
 
     void HelloTriangleApplication::createTextureImage()
-{
-    int texWidth, texHeight, texChannels;
-    stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
-    vk::DeviceSize imageSize = texWidth * texHeight * 4;
-    mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
-
-    if (!pixels)
     {
-        throw std::runtime_error("failed to load texture image!");
+        int texWidth, texHeight, texChannels;
+        stbi_uc* pixels = stbi_load(TEXTURE_PATH.c_str(), &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        vk::DeviceSize imageSize = texWidth * texHeight * 4;
+        mipLevels = static_cast<uint32_t>(std::floor(std::log2(std::max(texWidth, texHeight)))) + 1;
+
+        if (!pixels)
+        {
+            throw std::runtime_error("failed to load texture image!");
+        }
+
+        // ---------------------------
+        // 1. Create staging buffer (CPU visible)
+        // ---------------------------
+        VkBuffer stagingBuffer;
+        VmaAllocation stagingAllocation;
+        VmaAllocationInfo stagingAllocInfo{};
+
+        VkBufferCreateInfo bufferInfo{};
+        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+        bufferInfo.size = imageSize;
+        bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+            VMA_ALLOCATION_CREATE_MAPPED_BIT; // so we can memcpy directly
+
+        if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &stagingBuffer, &stagingAllocation,
+                            &stagingAllocInfo) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to create staging buffer for texture!");
+        }
+
+        // Copy pixels into mapped memory
+        memcpy(stagingAllocInfo.pMappedData, pixels, static_cast<size_t>(imageSize));
+
+        stbi_image_free(pixels);
+
+        // ---------------------------
+        // 2. Create GPU-only texture image with mip levels
+        // ---------------------------
+        createImage(
+            texWidth,
+            texHeight,
+            mipLevels,
+            vk::SampleCountFlagBits::e1,
+            vk::Format::eR8G8B8A8Srgb,
+            vk::ImageTiling::eOptimal,
+            vk::ImageUsageFlagBits::eTransferSrc | // needed for mipmap generation
+            vk::ImageUsageFlagBits::eTransferDst | // we copy into it from staging
+            vk::ImageUsageFlagBits::eSampled,
+            textureImage, // VkImage
+            textureImageAllocation // VmaAllocation
+        );
+
+        // ---------------------------
+        // 3. Transition, copy, generate mipmaps
+        // ---------------------------
+        transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal,
+                              mipLevels);
+
+        copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth),
+                          static_cast<uint32_t>(texHeight));
+
+        generateMipmaps(textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
+
+        // ---------------------------
+        // 4. Cleanup staging
+        // ---------------------------
+        vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
     }
-
-    // ---------------------------
-    // 1. Create staging buffer (CPU visible)
-    // ---------------------------
-    VkBuffer stagingBuffer;
-    VmaAllocation stagingAllocation;
-    VmaAllocationInfo stagingAllocInfo{};
-
-    VkBufferCreateInfo bufferInfo{};
-    bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    bufferInfo.size = imageSize;
-    bufferInfo.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
-    bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-    allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                      VMA_ALLOCATION_CREATE_MAPPED_BIT; // so we can memcpy directly
-
-    if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo, &stagingBuffer, &stagingAllocation, &stagingAllocInfo) != VK_SUCCESS)
-    {
-        throw std::runtime_error("failed to create staging buffer for texture!");
-    }
-
-    // Copy pixels into mapped memory
-    memcpy(stagingAllocInfo.pMappedData, pixels, static_cast<size_t>(imageSize));
-
-    stbi_image_free(pixels);
-
-    // ---------------------------
-    // 2. Create GPU-only texture image with mip levels
-    // ---------------------------
-    createImage(
-        texWidth,
-        texHeight,
-        mipLevels,
-        vk::SampleCountFlagBits::e1,
-        vk::Format::eR8G8B8A8Srgb,
-        vk::ImageTiling::eOptimal,
-        vk::ImageUsageFlagBits::eTransferSrc |    // needed for mipmap generation
-        vk::ImageUsageFlagBits::eTransferDst |    // we copy into it from staging
-        vk::ImageUsageFlagBits::eSampled,
-        textureImage,                             // VkImage
-        textureImageAllocation                    // VmaAllocation
-    );
-
-    // ---------------------------
-    // 3. Transition, copy, generate mipmaps
-    // ---------------------------
-    transitionImageLayout(textureImage, vk::ImageLayout::eUndefined, vk::ImageLayout::eTransferDstOptimal, mipLevels);
-
-    copyBufferToImage(stagingBuffer, textureImage, static_cast<uint32_t>(texWidth), static_cast<uint32_t>(texHeight));
-
-    generateMipmaps(textureImage, vk::Format::eR8G8B8A8Srgb, texWidth, texHeight, mipLevels);
-
-    // ---------------------------
-    // 4. Cleanup staging
-    // ---------------------------
-    vmaDestroyBuffer(allocator, stagingBuffer, stagingAllocation);
-}
 
 
     void HelloTriangleApplication::generateMipmaps(VkImage& image, vk::Format imageFormat, int32_t texWidth,
@@ -827,34 +847,34 @@ namespace Chopper
     }
 
     void HelloTriangleApplication::createImage(uint32_t width, uint32_t height, uint32_t mipLevels,
-                                           vk::SampleCountFlagBits numSamples, vk::Format format,
-                                           vk::ImageTiling tiling, vk::ImageUsageFlags usage,
-                                           VkImage& image, VmaAllocation& imageAllocation)
-{
-    VkImageCreateInfo imageInfo{};
-    imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
-    imageInfo.imageType = VK_IMAGE_TYPE_2D;
-    imageInfo.extent.width = width;
-    imageInfo.extent.height = height;
-    imageInfo.extent.depth = 1;
-    imageInfo.mipLevels = mipLevels;
-    imageInfo.arrayLayers = 1;
-    imageInfo.format = static_cast<VkFormat>(format);
-    imageInfo.tiling = static_cast<VkImageTiling>(tiling);
-    imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-    imageInfo.usage = static_cast<VkImageUsageFlags>(usage);
-    imageInfo.samples = static_cast<VkSampleCountFlagBits>(numSamples);
-    imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-    VmaAllocationCreateInfo allocInfo{};
-    allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;  // VRAM preferred
-    // For GPU-only images (textures, depth, color attachments), device-local is usually best.
-
-    if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &image, &imageAllocation, nullptr) != VK_SUCCESS)
+                                               vk::SampleCountFlagBits numSamples, vk::Format format,
+                                               vk::ImageTiling tiling, vk::ImageUsageFlags usage,
+                                               VkImage& image, VmaAllocation& imageAllocation)
     {
-        throw std::runtime_error("failed to create image with VMA!");
+        VkImageCreateInfo imageInfo{};
+        imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
+        imageInfo.imageType = VK_IMAGE_TYPE_2D;
+        imageInfo.extent.width = width;
+        imageInfo.extent.height = height;
+        imageInfo.extent.depth = 1;
+        imageInfo.mipLevels = mipLevels;
+        imageInfo.arrayLayers = 1;
+        imageInfo.format = static_cast<VkFormat>(format);
+        imageInfo.tiling = static_cast<VkImageTiling>(tiling);
+        imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        imageInfo.usage = static_cast<VkImageUsageFlags>(usage);
+        imageInfo.samples = static_cast<VkSampleCountFlagBits>(numSamples);
+        imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+        VmaAllocationCreateInfo allocInfo{};
+        allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE; // VRAM preferred
+        // For GPU-only images (textures, depth, color attachments), device-local is usually best.
+
+        if (vmaCreateImage(allocator, &imageInfo, &allocInfo, &image, &imageAllocation, nullptr) != VK_SUCCESS)
+        {
+            throw std::runtime_error("failed to create image with VMA!");
+        }
     }
-}
 
 
     void HelloTriangleApplication::transitionImageLayout(const VkImage& image, const vk::ImageLayout oldLayout,
@@ -1050,72 +1070,33 @@ namespace Chopper
         renderingInfo.pColorAttachments = &colorAttachment;
         renderingInfo.pDepthAttachment = &depthAttachment;
 
-        /*
-        // Transition depth image to depth attachment optimal layout
-        vk::ImageMemoryBarrier2 depthBarrier = {
-            vk::PipelineStageFlagBits2::eTopOfPipe,
-            {},
-            vk::PipelineStageFlagBits2::eEarlyFragmentTests |
-            vk::PipelineStageFlagBits2::eLateFragmentTests,
-            vk::AccessFlagBits2::eDepthStencilAttachmentRead |
-            vk::AccessFlagBits2::eDepthStencilAttachmentWrite,
-            vk::ImageLayout::eUndefined,
-            vk::ImageLayout::eDepthStencilAttachmentOptimal,
-            VK_QUEUE_FAMILY_IGNORED,
-            VK_QUEUE_FAMILY_IGNORED,
-            depthImage,
-            vk::ImageSubresourceRange{
-                vk::ImageAspectFlagBits::eDepth,
-                0,
-                1,
-                0,
-                1
-            }
-        };
-        vk::DependencyInfo depthDependencyInfo = {};
-        depthDependencyInfo.dependencyFlags = {};
-        depthDependencyInfo.imageMemoryBarrierCount = 1;
-        depthDependencyInfo.pImageMemoryBarriers = &depthBarrier;
 
-        commandBuffers[currentFrame].pipelineBarrier2(depthDependencyInfo);
-
-        vk::ClearValue clearColor = vk::ClearColorValue(0.01f, 0.01f, 0.01f, 1.0f);
-        vk::ClearValue clearDepth = vk::ClearDepthStencilValue(1.0f, 0);
-
-        vk::RenderingAttachmentInfo colorAttachmentInfo = {};
-        colorAttachmentInfo.imageView = swapChainImageViews[imageIndex];
-        colorAttachmentInfo.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
-        colorAttachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
-        colorAttachmentInfo.storeOp = vk::AttachmentStoreOp::eStore;
-        colorAttachmentInfo.clearValue = clearColor;
-
-        vk::RenderingAttachmentInfo depthAttachmentInfo = {};
-        depthAttachmentInfo.imageView = depthImageView;
-        depthAttachmentInfo.imageLayout = vk::ImageLayout::eDepthStencilAttachmentOptimal;
-        depthAttachmentInfo.loadOp = vk::AttachmentLoadOp::eClear;
-        depthAttachmentInfo.storeOp = vk::AttachmentStoreOp::eDontCare;
-        depthAttachmentInfo.clearValue = clearDepth;
-
-        vk::RenderingInfo renderingInfo = {};
-        renderingInfo.renderArea.offset.setX(0);
-        renderingInfo.renderArea.offset.setY(0);
-        renderingInfo.renderArea.extent = swapChainExtent;
-        renderingInfo.layerCount = 1;
-        renderingInfo.colorAttachmentCount = 1;
-        renderingInfo.pColorAttachments = &colorAttachmentInfo;
-        renderingInfo.pDepthAttachment = &depthAttachmentInfo;
-    */
         commandBuffers[currentFrame].beginRendering(renderingInfo);
         commandBuffers[currentFrame].bindPipeline(vk::PipelineBindPoint::eGraphics, *graphicsPipeline);
         commandBuffers[currentFrame].setViewport(0, vk::Viewport(0.0f, 0.0f, static_cast<float>(swapChainExtent.width),
                                                                  static_cast<float>(swapChainExtent.height), 0.0f,
                                                                  1.0f));
         commandBuffers[currentFrame].setScissor(0, vk::Rect2D(vk::Offset2D(0, 0), swapChainExtent));
+        // Bind vertex and index buffers
         commandBuffers[currentFrame].bindVertexBuffers(0, vk::Buffer(vertexBuffer), {0});
         commandBuffers[currentFrame].bindIndexBuffer(indexBuffer, 0, vk::IndexType::eUint32);
-        commandBuffers[currentFrame].bindDescriptorSets(vk::PipelineBindPoint::eGraphics, pipelineLayout, 0,
-                                                        *descriptorSets[currentFrame], nullptr);
-        commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+
+
+        // Draw each object with its own descriptor set
+        for (const auto& gameObject : gameObjects)
+        {
+            // Bind the descriptor set for this object
+            commandBuffers[currentFrame].bindDescriptorSets(
+                vk::PipelineBindPoint::eGraphics,
+                *pipelineLayout,
+                0,
+                *gameObject.descriptorSets[currentFrame],
+                nullptr
+            );
+
+            // Draw the object
+            commandBuffers[currentFrame].drawIndexed(indices.size(), 1, 0, 0, 0);
+        }
 
         // ImGui!
         ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), *commandBuffers[currentFrame]);
@@ -1212,6 +1193,24 @@ namespace Chopper
                 indices.push_back(uniqueVertices[vertex]);
             }
         }
+    }
+
+    void HelloTriangleApplication::setupGameObjects()
+    {
+        // Object 1 - Center
+        gameObjects[0].position = {0.0f, 0.0f, 0.0f};
+        gameObjects[0].rotation = {0.0f, 0.0f, 0.0f};
+        gameObjects[0].scale = {1.0f, 1.0f, 1.0f};
+
+        // Object 2 - Left
+        gameObjects[1].position = {0.0f, 0.0f, 0.0f};
+        gameObjects[1].rotation = {0.0f, glm::radians(45.0f), 0.0f};
+        gameObjects[1].scale = {1.0f, 1.0f, 1.0f};
+
+        // Object 3 - Right
+        gameObjects[2].position = {0.0f, 0.0f, 0.0f};
+        gameObjects[2].rotation = {0.0f, glm::radians(-45.0f), 0.0f};
+        gameObjects[2].scale = {1.0f, 1.0f, 1.0f};
     }
 
 
@@ -1372,54 +1371,60 @@ namespace Chopper
                 copyBuffer(*stagingBuffer, *indexBuffer, bufferSize);
         */
     }
-void HelloTriangleApplication::createUniformBuffers()
-{
-    uniformBuffers.clear();
-    uniformBuffersAllocation.clear();
-    uniformBuffersMapped.clear();
 
-    VkDeviceSize bufferSize = sizeof(UniformBufferObject);
-
-    uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
-    uniformBuffersAllocation.resize(MAX_FRAMES_IN_FLIGHT);
-    uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
-
-    for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+    void HelloTriangleApplication::createUniformBuffers()
     {
-        VkBufferCreateInfo bufferInfo{};
-        bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-        bufferInfo.size = bufferSize;
-        bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
-        bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-
-        VmaAllocationCreateInfo allocInfo{};
-        allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
-        allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                          VMA_ALLOCATION_CREATE_MAPPED_BIT;  // keep it mapped
-
-        VmaAllocationInfo vmaAllocDetails{};
-        if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo,
-                            &uniformBuffers[i], &uniformBuffersAllocation[i], &vmaAllocDetails) != VK_SUCCESS)
+        for (auto& gameObject : gameObjects)
         {
-            throw std::runtime_error("failed to create uniform buffer with VMA!");
-        }
+            gameObject.uniformBuffers.clear();
+            gameObject.uniformBuffersAllocation.clear();
+            gameObject.uniformBuffersMapped.clear();
 
-        // Already mapped because of the flag
-        uniformBuffersMapped[i] = vmaAllocDetails.pMappedData;
+            VkDeviceSize bufferSize = sizeof(UniformBufferObject);
+
+            gameObject.uniformBuffers.resize(MAX_FRAMES_IN_FLIGHT);
+            gameObject.uniformBuffersAllocation.resize(MAX_FRAMES_IN_FLIGHT);
+            gameObject.uniformBuffersMapped.resize(MAX_FRAMES_IN_FLIGHT);
+
+            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                VkBufferCreateInfo bufferInfo{};
+                bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
+                bufferInfo.size = bufferSize;
+                bufferInfo.usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT;
+                bufferInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+
+                VmaAllocationCreateInfo allocInfo{};
+                allocInfo.usage = VMA_MEMORY_USAGE_AUTO;
+                allocInfo.flags = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                    VMA_ALLOCATION_CREATE_MAPPED_BIT; // keep it mapped
+
+                VmaAllocationInfo vmaAllocDetails{};
+                if (vmaCreateBuffer(allocator, &bufferInfo, &allocInfo,
+                                    &gameObject.uniformBuffers[i], &gameObject.uniformBuffersAllocation[i],
+                                    &vmaAllocDetails) != VK_SUCCESS)
+                {
+                    throw std::runtime_error("failed to create uniform buffer with VMA!");
+                }
+
+                // Already mapped because of the flag
+                gameObject.uniformBuffersMapped[i] = vmaAllocDetails.pMappedData;
+            }
+        }
     }
-}
 
 
     void HelloTriangleApplication::createDescriptorPool()
     {
+        // We need MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT descriptor sets
         std::array poolSize{
-            vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_FRAMES_IN_FLIGHT),
-            vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_FRAMES_IN_FLIGHT),
+            vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer, MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT),
+            vk::DescriptorPoolSize(vk::DescriptorType::eCombinedImageSampler, MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT)
         };
         vk::DescriptorPoolCreateInfo poolInfo{};
         poolInfo.flags = vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet;
-        poolInfo.maxSets = MAX_FRAMES_IN_FLIGHT;
-        poolInfo.poolSizeCount = static_cast<uint32_t>(poolSize.size());
+        poolInfo.maxSets = MAX_OBJECTS * MAX_FRAMES_IN_FLIGHT,
+            poolInfo.poolSizeCount = static_cast<uint32_t>(poolSize.size());
         poolInfo.pPoolSizes = poolSize.data();
 
         descriptorPool = vk::raii::DescriptorPool(device, poolInfo);
@@ -1427,53 +1432,56 @@ void HelloTriangleApplication::createUniformBuffers()
 
     void HelloTriangleApplication::createDescriptorSets()
     {
-        std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
-        vk::DescriptorSetAllocateInfo allocInfo{};
-        allocInfo.descriptorPool = descriptorPool;
-        allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-        allocInfo.pSetLayouts = layouts.data();
-
-        descriptorSets.clear();
-        descriptorSets = device.allocateDescriptorSets(allocInfo);
-
-        for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+        for (auto& gameObject : gameObjects)
         {
-            vk::DescriptorBufferInfo bufferInfo{};
-            bufferInfo.buffer = uniformBuffers[i];
-            bufferInfo.offset = 0;
-            bufferInfo.range = sizeof(UniformBufferObject);
+            std::vector<vk::DescriptorSetLayout> layouts(MAX_FRAMES_IN_FLIGHT, descriptorSetLayout);
+            vk::DescriptorSetAllocateInfo allocInfo{};
+            allocInfo.descriptorPool = descriptorPool;
+            allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+            allocInfo.pSetLayouts = layouts.data();
 
-            vk::DescriptorImageInfo imageInfo{};
-            imageInfo.sampler = textureSampler;
-            imageInfo.imageView = textureImageView;
-            imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+            gameObject.descriptorSets.clear();
+            gameObject.descriptorSets = device.allocateDescriptorSets(allocInfo);
 
-            vk::WriteDescriptorSet descriptor_set0 = {};
-            descriptor_set0.dstSet = descriptorSets[i];
-            descriptor_set0.dstBinding = 0;
-            descriptor_set0.dstArrayElement = 0;
-            descriptor_set0.descriptorCount = 1;
-            descriptor_set0.descriptorType = vk::DescriptorType::eUniformBuffer;
-            descriptor_set0.pBufferInfo = &bufferInfo;
+            for (size_t i = 0; i < MAX_FRAMES_IN_FLIGHT; i++)
+            {
+                vk::DescriptorBufferInfo bufferInfo{};
+                bufferInfo.buffer = gameObject.uniformBuffers[i];
+                bufferInfo.offset = 0;
+                bufferInfo.range = sizeof(UniformBufferObject);
+
+                vk::DescriptorImageInfo imageInfo{};
+                imageInfo.sampler = textureSampler;
+                imageInfo.imageView = textureImageView;
+                imageInfo.imageLayout = vk::ImageLayout::eShaderReadOnlyOptimal;
+
+                vk::WriteDescriptorSet descriptor_set0 = {};
+                descriptor_set0.dstSet = gameObject.descriptorSets[i];
+                descriptor_set0.dstBinding = 0;
+                descriptor_set0.dstArrayElement = 0;
+                descriptor_set0.descriptorCount = 1;
+                descriptor_set0.descriptorType = vk::DescriptorType::eUniformBuffer;
+                descriptor_set0.pBufferInfo = &bufferInfo;
 
 
-            vk::WriteDescriptorSet descriptor_set1 = {};
-            descriptor_set1.dstSet = descriptorSets[i];
-            descriptor_set1.dstBinding = 1;
-            descriptor_set1.dstArrayElement = 0;
-            descriptor_set1.descriptorCount = 1;
-            descriptor_set1.descriptorType = vk::DescriptorType::eCombinedImageSampler;
-            descriptor_set1.pImageInfo = &imageInfo;
+                vk::WriteDescriptorSet descriptor_set1 = {};
+                descriptor_set1.dstSet = gameObject.descriptorSets[i];
+                descriptor_set1.dstBinding = 1;
+                descriptor_set1.dstArrayElement = 0;
+                descriptor_set1.descriptorCount = 1;
+                descriptor_set1.descriptorType = vk::DescriptorType::eCombinedImageSampler;
+                descriptor_set1.pImageInfo = &imageInfo;
 
-            std::array descriptorWrites{
-                vk::WriteDescriptorSet{
-                    descriptor_set0
-                },
-                vk::WriteDescriptorSet{
-                    descriptor_set1
-                }
-            };
-            device.updateDescriptorSets(descriptorWrites, {});
+                std::array descriptorWrites{
+                    vk::WriteDescriptorSet{
+                        descriptor_set0
+                    },
+                    vk::WriteDescriptorSet{
+                        descriptor_set1
+                    }
+                };
+                device.updateDescriptorSets(descriptorWrites, {});
+            }
         }
     }
 
@@ -1568,20 +1576,24 @@ void HelloTriangleApplication::createUniformBuffers()
     void HelloTriangleApplication::updateUniformBuffer(uint32_t currentImage)
     {
         static auto startTime = std::chrono::high_resolution_clock::now();
-
         auto currentTime = std::chrono::high_resolution_clock::now();
         float time = std::chrono::duration<float>(currentTime - startTime).count();
 
-        UniformBufferObject ubo{
-            rotate(glm::mat4(1.0f), time * glm::radians(90.0f), glm::vec3(0.0f, 0.0f, 1.0f)),
-            lookAt(glm::vec3(2.0f, 2.0f, 2.0f), glm::vec3(0.0f, 0.0f, 0.8f), glm::vec3(0.0f, 0.0f, 1.0f)),
-            glm::perspective(glm::radians(40.0f),
-                             static_cast<float>(swapChainExtent.width) / static_cast<float>(swapChainExtent.
-                                 height), 0.1f, 10.0f)
-        };
-        ubo.proj[1][1] *= -1;
-
-        memcpy(uniformBuffersMapped[currentImage], &ubo, sizeof(ubo));
+        glm::mat4 view = camera_.getView();
+        glm::mat4 proj = camera_.getProj();
+        
+        for (auto& gameObject : gameObjects)
+        {
+            gameObject.rotation.y += 0.000f; // Slow rotation around Y axis
+            glm::mat4 initialRotation = glm::rotate(glm::mat4(1.0f), glm::radians(-90.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+            glm::mat4 model = gameObject.getModelMatrix() * initialRotation;
+            UniformBufferObject ubo{
+                .model = model,
+                .view = view,
+                .proj = proj
+            };
+            memcpy(gameObject.uniformBuffersMapped[currentFrame], &ubo, sizeof(ubo));
+        }
     }
 
     void HelloTriangleApplication::drawFrame()
@@ -1768,21 +1780,30 @@ void HelloTriangleApplication::createUniformBuffers()
             ImGui::Text("counter = %d", counter);
 
             ImGui::Text("Application average %.3f ms/frame (%.1f FPS)", 1000.0f / io->Framerate, io->Framerate);
+
+            ImGui::SliderFloat3("Position1", &gameObjects[0].position[0], -10.0f, 10.0f);
+            // Edit 1 float using a slider from 0.0f to 1.0f
+            ImGui::SliderFloat3("Position2", &gameObjects[1].position[0], -10.0f, 10.0f);
+            // Edit 1 float using a slider from 0.0f to 1.0f
+            ImGui::SliderFloat3("Position3", &gameObjects[2].position[0], -10.0f, 10.0f);
+            // Edit 1 float using a slider from 0.0f to 1.0f
+
+
             ImGui::End();
         }
 
-/*
-        // 3. Show another simple window.
-        if (show_another_window)
-        {
-            ImGui::Begin("Another Window", &show_another_window);
-            // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
-            ImGui::Text("Hello from another window!");
-            if (ImGui::Button("Close Me"))
-                show_another_window = false;
-            ImGui::End();
-        }
-*/
+        /*
+                // 3. Show another simple window.
+                if (show_another_window)
+                {
+                    ImGui::Begin("Another Window", &show_another_window);
+                    // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+                    ImGui::Text("Hello from another window!");
+                    if (ImGui::Button("Close Me"))
+                        show_another_window = false;
+                    ImGui::End();
+                }
+        */
         // Rendering
         ImGui::Render();
     }
