@@ -3,26 +3,30 @@
 #include <stdexcept>
 #include <cstdlib>
 
-#include "Core/HelloTriangle.h"
+#include "Renderer/ChopperImGui.h"
 
 int main()
 {
-    //Chopper::PrintHelloWorld();
-
-    try
-    {
-        Chopper::HelloTriangleApplication app;
-        printf("Running Vulkan app...\n");
 #if !defined NDEBUG
-        printf("DEBUG MODE.\n");
+    printf("DEBUG MODE.\n");
 #endif
-        app.run();
-    }
-    catch (const std::exception& e)
     {
-        std::cerr << e.what() << '\n';
-        return EXIT_FAILURE;
-    }
+        Chopper::Engine engine;
+        engine.init();
 
-    return EXIT_SUCCESS;
+        while (!glfwWindowShouldClose(engine.getGLFWWindow()))
+        {
+            double current_time = glfwGetTime(); // time in seconds since glfwInit
+            engine.delta_time = current_time - engine.last_frame_time;
+            engine.last_frame_time = current_time;
+
+            ChopperImGui::imgui_initFrame();
+
+            if (engine.renderer.show_demo_window)
+                ImGui::ShowDemoWindow(&engine.renderer.show_demo_window);
+
+            engine.renderer.mainLoop(engine.delta_time);
+        }
+    }
+    return 0;
 }

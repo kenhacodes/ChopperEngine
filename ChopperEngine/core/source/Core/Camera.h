@@ -14,10 +14,10 @@ class Camera
     
 public:
     Camera();
-
+    
     bool enabled_ = true;
-    float speed_ = 2.5f;          // movement speed units/second
-    float sensitivity_ = 0.1f;    // mouse sensitivity
+    float speed_ = 2.0f;           // movement speed units/second
+    float sensitivity_ = 0.05f;    // mouse sensitivity
     
     void init(GLFWwindow* window, float width, float height);
     
@@ -72,8 +72,8 @@ private:
     glm::mat4 view_{};
     glm::mat4 proj_{};
 
-    float fovy_   = glm::radians(45.0f);
-    float aspect_ = 1920.0f / 1080.0f;
+    float fovy_   = glm::radians(50.0f);
+    float aspect_ = width_ / height_;
     float znear_  = 0.1f;
     float zfar_   = 100.0f;
 

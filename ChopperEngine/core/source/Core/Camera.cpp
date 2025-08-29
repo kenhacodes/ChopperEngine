@@ -32,6 +32,8 @@ void Camera::setupOrtho(float left, float right, float bottom, float top, float 
 
 void Camera::update(const double dt)
 {
+    
+    
     if (nullptr == window_) return;
     if (!enabled_) return;
 
@@ -93,9 +95,9 @@ void Camera::update(const double dt)
     if (glfwGetKey(window_, GLFW_KEY_D) == GLFW_PRESS)
         pos_ += right * velocity;
     if (glfwGetKey(window_, GLFW_KEY_E) == GLFW_PRESS)
-        pos_ += up_ * velocity;
+        pos_ += up_ * velocity * 0.3f;
     if (glfwGetKey(window_, GLFW_KEY_Q) == GLFW_PRESS)
-        pos_ -= up_ * velocity;
+        pos_ -= up_ * velocity * 0.3f;
 
     // --- Mouse Look ---
 
